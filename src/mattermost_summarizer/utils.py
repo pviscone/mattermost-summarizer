@@ -48,7 +48,7 @@ def cleanup_external_loggers() -> None:
         logger = logging.getLogger(logger_name)
         for handler in list(logger.handlers):
             if isinstance(handler, logging.StreamHandler):
-                logger.removeHandler(handler)
+                logger.removeHandler(handler)  # type: ignore[reportUnknownArgumentType]
         if not logger.handlers:
             root = logging.getLogger()
             if root.handlers:
