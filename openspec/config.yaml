@@ -1,0 +1,12 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3, uv, pydantic, httpx, OpenHands SDK
+  Package manager: uv
+  Linter: ruff
+  Type checker: mypy, pyright
+  Test framework: pytest
+  Domain: Mattermost conversation summarization tool
+  Key dependency: openhands-sdk (Software Agent SDK)
+  LLM: OpenAI-compatible providers via LiteLLM convention
+  Config: TOML primary, env var override (MM_ prefix)
