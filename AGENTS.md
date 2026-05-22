@@ -126,6 +126,16 @@ agent = Agent(
 agent = Agent(llm=llm, tools=[Tool(name='finish', params={})])
 ```
 
+### Mattermost-Specific Tools
+
+The project includes specialized tools for enriching thread summaries with external context:
+
+- **FetchFile** - Retrieves file attachments from URLs (text files only)
+- **FetchLaunchpadBug** - Fetches Launchpad bug details from URLs
+- **FetchGitHubIssue** - Fetches GitHub issues/PRs from URLs
+
+These tools are automatically available to the agent when encountering links in Mattermost posts.
+
 ### Conversation Types
 
 Two conversation classes exist with different interfaces:
@@ -157,4 +167,8 @@ class FetchThreadExecutor(ToolExecutor[FetchThreadAction, FetchThreadObservation
     def __call__(self, action: FetchThreadAction, conversation=None) -> FetchThreadObservation:
         # Implementation
         return FetchThreadObservation(...)
+
+class SummarizerFinishExecutor(ToolExecutor[SummarizerFinishAction, SummarizerFinishObservation]):
+    def __call__(self, action: SummarizerFinishAction, conversation=None) -> SummarizerFinishObservation:
+        return SummarizerFinishObservation(success=True, summary_provided=True)
 ```
