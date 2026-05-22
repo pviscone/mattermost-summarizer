@@ -9,6 +9,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from mattermost_summarizer.levels import SummaryLevel
+
 
 class MattermostSummarizerConfig(BaseSettings):
     """Configuration for Mattermost Summarizer.
@@ -29,6 +31,9 @@ class MattermostSummarizerConfig(BaseSettings):
         [github]
         token = "ghp_..."  # optional; raises GitHub API rate limit
 
+        [summarizer]
+        default_level = "normal"  # brief, normal, or detailed
+
     Example env vars:
         MM_MATTERMOST_URL=https://chat.canonical.com
         MM_MATTERMOST_TOKEN=your-token
@@ -36,6 +41,7 @@ class MattermostSummarizerConfig(BaseSettings):
         MM_LLM_API_KEY=your-key
         MM_LLM_BASE_URL=https://api.openai.com/v1
         MM_GITHUB_TOKEN=ghp_...  # optional
+        MM_SUMMARIZER_DEFAULT_LEVEL=detailed
     """
 
     model_config = SettingsConfigDict(
@@ -58,6 +64,10 @@ class MattermostSummarizerConfig(BaseSettings):
     github_token: SecretStr | None = Field(
         default=None,
         description="GitHub personal access token (optional; raises rate limit for FetchGitHubIssue)",
+    )
+    summarizer_default_level: SummaryLevel = Field(
+        default=SummaryLevel.NORMAL,
+        description="Default summarization level (brief, normal, or detailed)",
     )
 
     @classmethod
@@ -85,7 +95,6 @@ class MattermostSummarizerConfig(BaseSettings):
         with open(toml_path, "rb") as f:
             toml_data = tomli.load(f)  # pyright: ignore[reportUnknownVariableType, reportMemberType]  # type: ignore[assignment]
 
-        # Extract nested [mattermost] and [llm] sections
         data: dict[str, Any] = {}
 
         if "mattermost" in toml_data:
@@ -108,6 +117,13 @@ class MattermostSummarizerConfig(BaseSettings):
             github: dict[str, Any] = dict(toml_data["github"])  # pyright: ignore[reportArgumentType]  # type: ignore[misc]
             if "token" in github:
                 data["github_token"] = github["token"]
+
+        if "summarizer" in toml_data:
+            summarizer: dict[str, Any] = dict(toml_data["summarizer"])  # pyright: ignore[reportArgumentType]  # type: ignore[misc]
+            if "default_level" in summarizer:
+                level_str = summarizer["default_level"]
+                if isinstance(level_str, str):
+                    data["summarizer_default_level"] = SummaryLevel(level_str.lower())
 
         return cls(**data)
 

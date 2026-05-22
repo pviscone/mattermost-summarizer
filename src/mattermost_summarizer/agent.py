@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 if TYPE_CHECKING:
     from mattermost_summarizer.client import MattermostClient
+    from mattermost_summarizer.levels import SummaryLevel
 
 SYSTEM_PROMPT = """You are a Mattermost conversation summarizer. Your job is to read
 conversation threads and produce structured summaries.
@@ -22,11 +23,11 @@ When given a Mattermost permalink:
 4. When you encounter Launchpad bug URLs (bugs.launchpad.net), you MAY call FetchLaunchpadBug to get bug details
 5. When you encounter GitHub issue or PR URLs, you MAY call FetchGitHubIssue to get issue/PR details
 6. Produce a summary with:
-   - TL;DR: 3-5 bullet points capturing the key outcomes (as a newline-separated string, NOT a list)
-   - Key Findings: Important insights (as a list of strings)
-   - Narrative: Chronological walkthrough (as a single string)
-   - Action items: Decisions and follow-ups (as a list of strings)
-   - Participants: List of contributors (as a list of strings)
+    - TL;DR: 3-5 bullet points capturing the key outcomes (as a newline-separated string, NOT a list)
+    - Key Findings: Important insights (as a list of strings)
+    - Narrative: Chronological walkthrough (as a single string)
+    - Action items: Decisions and follow-ups (as a list of strings)
+    - Participants: List of contributors (as a list of strings)
 7. Call the finish tool with your summary
 
 Example finish call:
@@ -59,10 +60,33 @@ def supports_json_mode(model: str) -> bool:
     supports the response_format parameter.
     """
     try:
-        params = litellm.get_supported_openai_params(model) or []
+        params_or_none = litellm.get_supported_openai_params(model)  # type: ignore
+        params: list[str] = params_or_none if params_or_none else []  # type: ignore
         return "response_format" in params
     except Exception:
         return False
+
+
+def build_user_message(
+    permalink_url: str,
+    post_id: str,
+    level: SummaryLevel,
+    addendum: str,
+) -> str:
+    """Build the user message with level-specific addendum.
+
+    Args:
+        permalink_url: The Mattermost permalink URL
+        post_id: The post ID extracted from the URL
+        level: The summarization level
+        addendum: Level-specific prompt addendum
+
+    Returns:
+        Complete user message with base prompt and level addendum
+    """
+    return (
+        f"Summarize this Mattermost thread: {permalink_url}\nThe post ID is: {post_id}\n\n{SYSTEM_PROMPT}\n\n{addendum}"
+    )
 
 
 def build_summarizer_agent(
@@ -120,6 +144,7 @@ def build_summarizer_agent_with_github(
     llm_base_url: str | None,
     client: MattermostClient,
     github_token: SecretStr | None,
+    level: SummaryLevel,
 ) -> Agent:
     """Build a Mattermost summarizer agent with all tools including GitHub.
 
@@ -129,19 +154,36 @@ def build_summarizer_agent_with_github(
         llm_base_url: Base URL for the LLM API (None = provider default)
         client: MattermostClient instance
         github_token: Optional GitHub token for FetchGitHubIssue tool
+        level: Summarization level
 
     Returns:
         Configured Agent instance ready for Conversation
     """
+    from mattermost_summarizer.levels import BRIEF_ADDENDUM, DETAILED_ADDENDUM, NORMAL_ADDENDUM, SummaryLevel
     from mattermost_summarizer.tools import build_summarizer_tools
 
-    tools = build_summarizer_tools(client, github_token)
-    return build_summarizer_agent(
+    if level == SummaryLevel.BRIEF:
+        addendum = BRIEF_ADDENDUM
+    elif level == SummaryLevel.DETAILED:
+        addendum = DETAILED_ADDENDUM
+    else:
+        addendum = NORMAL_ADDENDUM
+
+    tools = build_summarizer_tools(client, github_token, level)
+    agent = build_summarizer_agent(
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
         tools=tools,
     )
+    agent._user_message_addendum = addendum  # type: ignore[attr-defined]
+    return agent
 
 
-__all__ = ["build_summarizer_agent", "build_summarizer_agent_with_github", "SYSTEM_PROMPT", "supports_json_mode"]
+__all__ = [
+    "build_summarizer_agent",
+    "build_summarizer_agent_with_github",
+    "SYSTEM_PROMPT",
+    "supports_json_mode",
+    "build_user_message",
+]

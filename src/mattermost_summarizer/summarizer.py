@@ -1,20 +1,32 @@
 """Main summarizer module for mattermost-summarizer."""
 
+from __future__ import annotations
+
 import tempfile
 import time
 from pathlib import Path
 
 from openhands.sdk import LocalConversation
 
-from mattermost_summarizer.agent import SYSTEM_PROMPT, build_summarizer_agent_with_github
+from mattermost_summarizer.agent import build_summarizer_agent_with_github, build_user_message
 from mattermost_summarizer.client import MattermostClient
 from mattermost_summarizer.config import MattermostSummarizerConfig
 from mattermost_summarizer.exceptions import (
     AgentStuckError,
     PermalinkError,
 )
-from mattermost_summarizer.models import SummaryMeta, SummaryResult
-from mattermost_summarizer.tools.finish import SummarizerFinishAction
+from mattermost_summarizer.levels import (
+    BRIEF_ADDENDUM,
+    DETAILED_ADDENDUM,
+    NORMAL_ADDENDUM,
+    AnySummaryResult,
+    BriefSummaryResult,
+    DetailedSummaryResult,
+    NormalSummaryResult,
+    SummarizerFinishActionBase,
+    SummaryLevel,
+    SummaryMeta,
+)
 from mattermost_summarizer.utils import parse_permalink
 from mattermost_summarizer.visualizer import FileConversationVisualizer
 
@@ -37,7 +49,7 @@ class MattermostSummarizer:
         self.config = config
 
     @classmethod
-    def from_config(cls, path: Path | str) -> "MattermostSummarizer":
+    def from_config(cls, path: Path | str) -> MattermostSummarizer:
         """Load configuration from a TOML file.
 
         Args:
@@ -54,7 +66,7 @@ class MattermostSummarizer:
         return cls(config)
 
     @classmethod
-    def from_env(cls) -> "MattermostSummarizer":
+    def from_env(cls) -> MattermostSummarizer:
         """Load configuration from environment variables.
 
         Returns:
@@ -63,14 +75,20 @@ class MattermostSummarizer:
         config = MattermostSummarizerConfig.from_env()
         return cls(config)
 
-    def summarize(self, permalink_url: str) -> SummaryResult:
+    def summarize(
+        self,
+        permalink_url: str,
+        level: SummaryLevel = SummaryLevel.NORMAL,
+    ) -> AnySummaryResult:
         """Summarize a Mattermost thread from a permalink URL.
 
         Args:
             permalink_url: A Mattermost permalink (e.g., https://chat.example.com/team/pl/abc123)
+            level: Summarization detail level (default: NORMAL)
 
         Returns:
-            SummaryResult with tldr, narrative, action_items, participants, and metadata
+            AnySummaryResult (BriefSummaryResult, NormalSummaryResult, or DetailedSummaryResult)
+                with tldr, narrative (if not brief), action_items, participants (if not brief), and metadata
 
         Raises:
             PermalinkError: If URL format is invalid
@@ -84,6 +102,15 @@ class MattermostSummarizer:
             post_id = parse_permalink(permalink_url)
         except ValueError as e:
             raise PermalinkError(str(e)) from e
+
+        if level == SummaryLevel.BRIEF:
+            addendum = BRIEF_ADDENDUM
+        elif level == SummaryLevel.DETAILED:
+            addendum = DETAILED_ADDENDUM
+        else:
+            addendum = NORMAL_ADDENDUM
+
+        message = build_user_message(permalink_url, post_id, level, addendum)
 
         visualizer = FileConversationVisualizer("agent-trace.log")
 
@@ -100,6 +127,7 @@ class MattermostSummarizer:
                 llm_base_url=self.config.llm_base_url,
                 client=client,
                 github_token=self.config.github_token,
+                level=level,
             )
 
             conv_ref: list[LocalConversation | None] = [None]
@@ -123,12 +151,9 @@ class MattermostSummarizer:
             )
             conv_ref[0] = conversation
 
-            message: str = (
-                f"Summarize this Mattermost thread: {permalink_url}\nThe post ID is: {post_id}\n\n{SYSTEM_PROMPT}"
-            )
-            conversation.send_message(message)  # type: ignore[arg-type]
+            conversation.send_message(message)  # type: ignore[arg-type, misc]
 
-            conversation.run()
+            conversation.run()  # type: ignore[misc]
 
             try:
                 finish_action = _extract_finish_action(conversation)
@@ -170,30 +195,56 @@ class MattermostSummarizer:
                 if hasattr(finish_action, "tldr"):
                     thread_length = _estimate_thread_length(conversation)
 
-                return SummaryResult(
-                    tldr=finish_action.tldr,
-                    key_findings=finish_action.key_findings,
-                    narrative=finish_action.narrative,
-                    action_items=finish_action.action_items,
-                    participants=finish_action.participants,
-                    metadata=SummaryMeta(
-                        thread_length=thread_length,
-                        cost=cost,
-                        model_used=self.config.llm_model,
-                        duration_seconds=duration,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                        reasoning_tokens=reasoning_tokens,
-                    ),
+                metadata = SummaryMeta(
+                    thread_length=thread_length,
+                    cost=cost,
+                    model_used=self.config.llm_model,
+                    duration_seconds=duration,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
                 )
+
+                tldr = getattr(finish_action, "tldr", "")
+                action_items = getattr(finish_action, "action_items", [])
+                key_findings = getattr(finish_action, "key_findings", [])
+                narrative = getattr(finish_action, "narrative", "")
+                participants = getattr(finish_action, "participants", [])
+
+                if level == SummaryLevel.BRIEF:
+                    return BriefSummaryResult(
+                        tldr=tldr,
+                        action_items=action_items,
+                        metadata=metadata,
+                    )
+                elif level == SummaryLevel.DETAILED:
+                    return DetailedSummaryResult(
+                        tldr=tldr,
+                        key_findings=key_findings,
+                        narrative=narrative,
+                        action_items=action_items,
+                        participants=participants,
+                        open_questions=getattr(finish_action, "open_questions", []),
+                        context_sources=getattr(finish_action, "context_sources", []),
+                        metadata=metadata,
+                    )
+                else:
+                    return NormalSummaryResult(
+                        tldr=tldr,
+                        key_findings=key_findings,
+                        narrative=narrative,
+                        action_items=action_items,
+                        participants=participants,
+                        metadata=metadata,
+                    )
             finally:
                 conversation.close()
                 visualizer.close()
 
 
-def _extract_finish_action(conversation: LocalConversation) -> SummarizerFinishAction | None:
+def _extract_finish_action(conversation: LocalConversation) -> SummarizerFinishActionBase | None:
     """Scan conversation events for a SummarizerFinishAction."""
     if not hasattr(conversation, "state") or not conversation.state:
         return None
@@ -202,8 +253,8 @@ def _extract_finish_action(conversation: LocalConversation) -> SummarizerFinishA
 
     for event in reversed(events):
         if hasattr(event, "action") and event.action is not None:
-            action: SummarizerFinishAction = event.action
-            if hasattr(action, "tldr") and hasattr(action, "narrative"):
+            action = event.action
+            if isinstance(action, SummarizerFinishActionBase):
                 return action
 
         if hasattr(event, "observation") and event.observation is not None:
@@ -212,8 +263,8 @@ def _extract_finish_action(conversation: LocalConversation) -> SummarizerFinishA
                 if obs.summary_provided:
                     for prev_event in reversed(events):
                         if hasattr(prev_event, "action") and prev_event.action is not None:
-                            prev_action: SummarizerFinishAction = prev_event.action
-                            if hasattr(prev_action, "tldr"):
+                            prev_action = prev_event.action
+                            if isinstance(prev_action, SummarizerFinishActionBase):
                                 return prev_action
 
     return None

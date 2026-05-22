@@ -20,6 +20,7 @@ def main() -> int:
     setup_logging()
 
     from mattermost_summarizer.config import MattermostSummarizerConfig
+    from mattermost_summarizer.levels import SummaryLevel
     from mattermost_summarizer.summarizer import MattermostSummarizer
 
     cleanup_external_loggers()
@@ -42,6 +43,13 @@ def main() -> int:
         default="text",
         help="Output format (default: text)",
     )
+    parser.add_argument(
+        "--level",
+        "-l",
+        choices=["brief", "normal", "detailed"],
+        default=None,
+        help="Summarization level (overrides config default_level)",
+    )
 
     args = parser.parse_args()
 
@@ -56,10 +64,14 @@ def main() -> int:
         print(f"Error loading config: {e}", file=sys.stderr)
         return 1
 
+    level = config.summarizer_default_level
+    if args.level is not None:
+        level = SummaryLevel(args.level)
+
     try:
         summarizer = MattermostSummarizer(config)
         with contextlib.redirect_stdout(sys.stderr):
-            result = summarizer.summarize(args.url)
+            result = summarizer.summarize(args.url, level=level)
     except Exception as e:
         print(f"Error summarizing thread: {e}", file=sys.stderr)
         return 1

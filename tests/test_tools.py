@@ -3,7 +3,7 @@
 
 class TestFinishTool:
     def test_finish_observation_to_llm_content(self) -> None:
-        from mattermost_summarizer.tools.finish.definition import (
+        from mattermost_summarizer.levels.base import (
             SummarizerFinishObservation,
         )
 
