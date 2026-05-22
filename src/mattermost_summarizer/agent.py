@@ -114,7 +114,43 @@ Your job is to coordinate specialized sub-agents to gather context and produce a
 
   Example - Complete workflow to fetch a thread:
     1. delegate(command="spawn", ids=["fetcher_1"], agent_types=["thread_fetcher"])
-    2. delegate(command="delegate", tasks={"fetcher_1": "Fetch Mattermost thread from permalink: https://chat.example.com/team/pl/abc123"})"""
+    2. delegate(command="delegate", tasks={"fetcher_1": "Fetch Mattermost thread from permalink: https://chat.example.com/team/pl/abc123"})
+
+  Reference Tracking Tool (track_references):
+  Use the track_references tool to programmatically track URLs and avoid cycles.
+
+  Commands:
+    track_references(command="classify_text", url="<thread content text>")
+      - Extracts and classifies all URLs found in the text
+      - Returns list of URLs with their types (mattermost_thread, launchpad_bug, github_issue, etc.)
+      - Automatically skips URLs already marked as followed
+
+    track_references(command="mark_followed", url="<url>")
+      - Marks a URL as followed to prevent duplicate processing
+
+    track_references(command="is_followed", url="<url>")
+      - Checks if a URL has already been followed
+
+    track_references(command="can_follow")
+      - Returns whether we can follow another level of references
+      - Reports current_depth/max_depth
+
+    track_references(command="increment_depth")
+      - Increments depth counter after following a reference
+
+    track_references(command="reset")
+      - Resets tracker for a new summary operation
+
+  Example workflow with tracking:
+    1. After delegating to thread_fetcher, get the response content
+    2. track_references(command="classify_text", url="<thread content>")
+    3. For each URL in the response, decide if relevant to follow
+    4. Before following: track_references(command="is_followed", url="<url>")
+    5. If not followed and can_follow:
+       - track_references(command="mark_followed", url="<url>")
+       - track_references(command="increment_depth")
+       - delegate to appropriate sub-agent
+    6. After all references processed, call finish"""
 
 
 def supports_json_mode(model: str) -> bool:
@@ -275,6 +311,7 @@ def build_orchestrator_agent(
     )
     from mattermost_summarizer.levels.base import SummarizerFinishToolBase
     from mattermost_summarizer.subagents.delegate_tool import DelegateTool
+    from mattermost_summarizer.subagents.reference_tracking_tool import ReferenceTrackingTool
 
     extra_body: dict[str, object] | None = None
     enable_json_mode = supports_json_mode(llm_model)
@@ -311,9 +348,16 @@ def build_orchestrator_agent(
 
     oh_sdk.register_tool("finish", finish_tool_def)  # type: ignore[arg-type]
 
+    from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+    tracker = ReferenceTracker(max_depth=max_reference_depth)
+    track_references_tool_def = ReferenceTrackingTool.create(tracker)[0]
+    oh_sdk.register_tool("track_references", track_references_tool_def)  # type: ignore[arg-type]
+
     tools: list[Tool] = [
         Tool(name="delegate", params={}),
         Tool(name="finish", params={}),
+        Tool(name="track_references", params={}),
     ]
 
     agent_kwargs: dict[str, object] = {

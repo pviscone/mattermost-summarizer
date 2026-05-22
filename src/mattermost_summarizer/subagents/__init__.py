@@ -98,6 +98,8 @@ def create_bug_researcher(llm: LLM, client: MattermostClient | None = None) -> A
     """Create a bug_researcher sub-agent.
 
     This agent fetches Launchpad bug details and summarizes findings.
+    The `client` parameter is kept for API compatibility with other factory functions
+    but is not used by this agent (bug fetching does not require Mattermost API).
 
     Args:
         llm: LLM instance to use for the agent

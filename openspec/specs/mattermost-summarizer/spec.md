@@ -31,30 +31,93 @@ The system SHALL provide channel context when available.
 
 ### REQ-005: Agent-based Summarization
 The system SHALL use the OpenHands Software Agent SDK to perform summarization.
-- Agent SHALL have access to FetchThread, GetUserProfile, FetchChannel, FetchFile, FetchLaunchpadBug, FetchGitHubIssue, and finish tools
-- Agent SHALL use a reasoning loop (not single-shot)
-- Agent SHALL call the finish tool with structured output when satisfied
-- The system prompt SHALL instruct the agent to follow Mattermost permalinks, Launchpad bug URLs, and GitHub issue/PR URLs encountered in the thread
 
-#### Scenario: Agent follows a Mattermost permalink in a thread
-- **WHEN** the fetched thread contains a Mattermost permalink URL
-- **THEN** the agent MAY call `FetchThread` with the referenced post ID to retrieve additional context
+The architecture is **orchestrator + sub-agents**:
+- The **orchestrator agent** SHALL have access to DelegateTool and a level-specific finish tool
+- The orchestrator SHALL delegate all data fetching to **sub-agents**
+- Sub-agents SHALL have access to domain tools based on their specialty:
+  - `thread_fetcher`: FetchThread, GetUser, FetchChannel
+  - `bug_researcher`: FetchLaunchpadBug
+  - `github_researcher`: FetchGitHubIssue
+  - `file_fetcher`: FetchFile
+- Each sub-agent SHALL be registered via `register_agent()` with a factory function
+- The orchestrator SHALL coordinate the delegation loop and synthesize results
 
-#### Scenario: Agent follows a Launchpad bug URL in a thread
-- **WHEN** the fetched thread contains a `bugs.launchpad.net` URL
-- **THEN** the agent MAY call `FetchLaunchpadBug` to retrieve the bug details
+The orchestrator's system prompt SHALL be provided via `AgentContext.system_message_suffix`.
 
-#### Scenario: Agent follows a GitHub issue or PR URL in a thread
-- **WHEN** the fetched thread contains a `github.com/.../issues/` or `github.com/.../pull/` URL
-- **THEN** the agent MAY call `FetchGitHubIssue` to retrieve the issue or PR details
+#### Scenario: Orchestrator delegates thread fetch
+- **WHEN** the user requests a summary
+- **THEN** the orchestrator delegates to thread_fetcher
+- **THEN** thread_fetcher fetches the thread and returns formatted text
+- **THEN** the orchestrator scans for references and delegates further as needed
+- **THEN** the orchestrator synthesizes and calls finish
 
 ### REQ-006: Stop Condition
-The system SHALL use the finish tool as the primary stop condition.
-- FinishAction SHALL accept: tldr, narrative, action_items, participants
-- The system SHALL register an event callback on `LocalConversation` that calls `conversation.pause()` immediately upon observing the first `SummarizerFinishAction` event, stopping the run loop after exactly one finish call with no additional LLM iterations
-- The summary SHALL be extracted from the conversation event log after the run exits (whether status is `FINISHED` or `PAUSED`)
-- StuckDetector SHALL be enabled as a secondary safety net for cases where the finish tool is never called
-- If the finish tool was never called and stuck is detected, the system SHALL raise `AgentStuckError`
+The system SHALL use the finish tool and critic evaluation as stop conditions.
+
+Primary stop: The finish tool call signals the agent believes summarization is complete.
+- The system SHALL extract the `SummarizerFinishAction` from conversation events
+- The system SHALL pause the conversation upon observing the first finish action
+
+Quality gate: The critic evaluates the summary after finish.
+- If the critic score is below `success_threshold`, the orchestrator revises and calls finish again
+- This loop repeats up to `max_iterations` times
+- If `critic_enabled=false`, only the finish tool stop condition applies
+
+StuckDetector remains as a tertiary safety net.
+
+#### Scenario: Summary passes critic on first try
+- **WHEN** the orchestrator calls finish with a summary
+- **THEN** the critic evaluates and scores 0.85
+- **THEN** the score is above threshold (0.7)
+- **THEN** summarization completes without revision
+
+#### Scenario: Summary fails critic, revision occurs
+- **WHEN** the orchestrator calls finish with a summary
+- **THEN** the critic evaluates and scores 0.55
+- **THEN** the orchestrator receives feedback and revises
+- **THEN** the orchestrator calls finish again with an improved summary
+
+#### Scenario: Critic disabled, only finish stop applies
+- **WHEN** `[summarizer] critic_enabled = false`
+- **THEN** no critic evaluation occurs
+- **THEN** the first finish call ends summarization
+
+### REQ-006a: Multi-agent architecture
+The system SHALL implement a multi-agent architecture with one orchestrator and multiple sub-agents.
+
+Orchestrator responsibilities:
+- Parse user input (permalink URL)
+- Coordinate the delegation loop
+- Scan fetched content for URLs
+- Decide which references to follow
+- Track recursion depth
+- Synthesize gathered context
+- Call finish with structured summary
+
+Sub-agent responsibilities:
+- Fetch data for their domain (thread, bug, issue, file)
+- Return formatted text results to the orchestrator
+- Do not call other sub-agents
+
+#### Scenario: Architecture with four sub-agents
+- **WHEN** the application starts
+- **THEN** four sub-agent types are registered: thread_fetcher, bug_researcher, github_researcher, file_fetcher
+- **THEN** the orchestrator has DelegateTool and finish
+- **THEN** sub-agents have domain tools only
+
+### REQ-006b: System prompt via AgentContext
+The system prompt SHALL be provided via `AgentContext.system_message_suffix`.
+
+- The system prompt SHALL be sent once as the system message (not in every user message)
+- Providers that support system message caching (Anthropic, Gemini) SHALL benefit from this
+- The user message SHALL contain only task-specific input: the permalink URL and post ID
+
+#### Scenario: System prompt in system message, not user message
+- **WHEN** the orchestrator is configured with `AgentContext(system_message_suffix=SYSTEM_PROMPT)`
+- **THEN** the system prompt is sent once per conversation
+- **THEN** subsequent turns do NOT re-send the full system prompt in the user message
+- **THEN** user messages are small (just the task input)
 
 ### REQ-007: TL;DR Output
 The system SHALL produce a bullet-point TL;DR (3-5 points) capturing key outcomes and decisions.

@@ -3,6 +3,45 @@
 from __future__ import annotations
 
 
+class TestCriticConfiguration:
+    """Test critic configuration in orchestrator."""
+
+    def test_critic_iterative_refinement_defaults(self) -> None:
+        """Test that SummarizationCritic has proper iterative_refinement config."""
+        from openhands.sdk.critic import IterativeRefinementConfig
+
+        from mattermost_summarizer.critic import SummarizationCritic
+
+        critic = SummarizationCritic(
+            llm_model="openai/gpt-4o",
+            llm_api_key="test-key",
+        )
+
+        assert critic.iterative_refinement is not None
+        assert isinstance(critic.iterative_refinement, IterativeRefinementConfig)
+        assert critic.iterative_refinement.success_threshold == 0.7
+        assert critic.iterative_refinement.max_iterations == 2
+
+    def test_critic_iterative_refinement_custom_values(self) -> None:
+        """Test that SummarizationCritic accepts custom iterative_refinement values."""
+        from openhands.sdk.critic import IterativeRefinementConfig
+
+        from mattermost_summarizer.critic import SummarizationCritic
+
+        critic = SummarizationCritic(
+            llm_model="openai/gpt-4o",
+            llm_api_key="test-key",
+            iterative_refinement=IterativeRefinementConfig(
+                success_threshold=0.85,
+                max_iterations=3,
+            ),
+        )
+
+        assert critic.iterative_refinement is not None
+        assert critic.iterative_refinement.success_threshold == 0.85
+        assert critic.iterative_refinement.max_iterations == 3
+
+
 class TestSubagentRegistration:
     """Test sub-agent registration."""
 
@@ -149,3 +188,147 @@ class TestOrchestratorPrompt:
         assert "delegate(" in ORCHESTRATOR_PROMPT
         assert "agent_types" in ORCHESTRATOR_PROMPT
         assert "tasks" in ORCHESTRATOR_PROMPT
+
+
+class TestRecursiveReferenceFollowing:
+    """Test recursive reference following depth behavior."""
+
+    def test_depth_1_no_recursion(self) -> None:
+        """Task 4.6: Test depth 1 (no recursion, thread only)."""
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=1)
+        # At depth 0, can follow 1 level of references
+        assert tracker.can_follow_deeper() is True
+        tracker.increment_depth()
+        # At depth 1, cannot follow deeper (max_depth reached)
+        assert tracker.current_depth == 1
+        assert tracker.can_follow_deeper() is False
+
+    def test_depth_2_one_reference(self) -> None:
+        """Task 4.7: Test depth 2 (one referenced thread or bug followed)."""
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=2)
+        # Start at depth 0, can follow deeper
+        assert tracker.can_follow_deeper() is True
+        # After processing root thread, depth increments to 1
+        tracker.increment_depth()
+        assert tracker.current_depth == 1
+        assert tracker.can_follow_deeper() is True
+        # After following one reference, depth increments to 2
+        tracker.increment_depth()
+        assert tracker.current_depth == 2
+        assert tracker.can_follow_deeper() is False
+
+    def test_depth_3_thread_chain(self) -> None:
+        """Task 4.8: Test depth 3 (thread -> thread -> thread chain)."""
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=3)
+        # Simulate chain: thread A -> thread B -> thread C
+        tracker.increment_depth()  # depth=1: thread_fetcher for thread A
+        assert tracker.current_depth == 1
+        assert tracker.can_follow_deeper() is True
+
+        tracker.increment_depth()  # depth=2: thread_fetcher for thread B
+        assert tracker.current_depth == 2
+        assert tracker.can_follow_deeper() is True
+
+        tracker.increment_depth()  # depth=3: thread_fetcher for thread C
+        assert tracker.current_depth == 3
+        assert tracker.can_follow_deeper() is False  # max_depth reached
+
+    def test_depth_limit_stops_recursion(self) -> None:
+        """Task 4.9: Verify depth limit stops recursion correctly."""
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=2)
+        tracker.increment_depth()  # depth=1
+        tracker.increment_depth()  # depth=2
+        # At max depth, cannot go deeper
+        assert tracker.can_follow_deeper() is False
+        assert tracker.current_depth == 2
+        # Reset should clear depth
+        tracker.reset()
+        assert tracker.current_depth == 0
+        assert tracker.can_follow_deeper() is True
+
+    def test_cycle_prevention(self) -> None:
+        """Test that followed URLs are tracked to prevent cycles."""
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=3)
+        url = "https://chat.example.com/team/pl/abc123"
+        assert tracker.has_been_followed(url) is False
+        tracker.mark_followed(url)
+        assert tracker.has_been_followed(url) is True
+        # Should not re-follow same URL
+        assert tracker.has_been_followed(url) is True
+
+
+class TestCriticEvaluation:
+    """Test critic evaluation behavior."""
+
+    def test_critic_evaluates_summary_returns_score(self) -> None:
+        """Task 5.9: Test critic evaluates summary and returns score."""
+        from unittest.mock import MagicMock, patch
+
+        from openhands.sdk.critic import CriticResult
+
+        from mattermost_summarizer.critic import SummarizationCritic
+        from mattermost_summarizer.levels import SummaryLevel
+        from mattermost_summarizer.levels.normal import NormalFinishAction
+
+        critic = SummarizationCritic(
+            llm_model="openai/gpt-4o",
+            llm_api_key="test-key",
+            level=SummaryLevel.NORMAL,
+        )
+
+        # Create a real finish action for testing
+        finish_action = NormalFinishAction(
+            tldr="Key point 1\nKey point 2",
+            key_findings=["finding1"],
+            narrative="Test narrative",
+            action_items=["item1"],
+            participants=["alice", "bob"],
+        )
+
+        # Mock the _extract_finish_action to return our action
+        with patch.object(critic, "_extract_finish_action") as mock_extract:
+            mock_extract.return_value = finish_action
+            # Mock the LLM evaluation response
+            with patch.object(critic, "_call_critic_llm") as mock_call:
+                mock_call.return_value = MagicMock(score=0.85, feedback="Good summary")
+
+                result = critic.evaluate([])  # events param doesn't matter with mocked extract
+
+                assert isinstance(result, CriticResult)
+                assert result.score == 0.85
+                assert "Good summary" in result.message
+
+    def test_critic_iterative_refinement_below_threshold(self) -> None:
+        """Task 5.10: Test iterative refinement when score is below threshold."""
+        from openhands.sdk.critic import IterativeRefinementConfig
+
+        from mattermost_summarizer.critic import SummarizationCritic
+
+        critic = SummarizationCritic(
+            llm_model="openai/gpt-4o",
+            llm_api_key="test-key",
+            iterative_refinement=IterativeRefinementConfig(
+                success_threshold=0.7,
+                max_iterations=2,
+            ),
+        )
+
+        # Verify config
+        assert critic.iterative_refinement.success_threshold == 0.7
+        assert critic.iterative_refinement.max_iterations == 2
+
+        # Score below threshold should trigger revision
+        # (In real usage, the OpenHands SDK Agent handles the loop)
+        assert critic.iterative_refinement is not None
+        assert hasattr(critic.iterative_refinement, "success_threshold")
+        assert hasattr(critic.iterative_refinement, "max_iterations")

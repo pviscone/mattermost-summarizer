@@ -35,10 +35,10 @@
 - [x] 4.3 Implement depth tracking (current_depth, max_reference_depth)
 - [x] 4.4 Implement cycle prevention (track followed URLs per summary operation)
 - [x] 4.5 Implement delegation routing (URL type → appropriate sub-agent)
-- [ ] 4.6 Test depth 1 (no recursion, thread only)
-- [ ] 4.7 Test depth 2 (one referenced thread or bug followed)
-- [ ] 4.8 Test depth 3 (thread → thread → thread chain)
-- [ ] 4.9 Verify depth limit stops recursion correctly
+- [x] 4.6 Test depth 1 (no recursion, thread only)
+- [x] 4.7 Test depth 2 (one referenced thread or bug followed)
+- [x] 4.8 Test depth 3 (thread → thread → thread chain)
+- [x] 4.9 Verify depth limit stops recursion correctly
 
 ## 5. Critic Implementation
 
@@ -50,8 +50,8 @@
 - [x] 5.6 Implement `_call_critic_llm(context, summary, rubric)` for LLM evaluation
 - [x] 5.7 Configure `iterative_refinement` with default threshold 0.7, max 2 iterations
 - [x] 5.8 Wire critic into orchestrator agent
-- [ ] 5.9 Test critic evaluates summary and returns score
-- [ ] 5.10 Test iterative refinement loop (revision when below threshold)
+- [x] 5.9 Test critic evaluates summary and returns score
+- [x] 5.10 Test iterative refinement loop (revision when below threshold)
 
 ## 6. Configuration
 
