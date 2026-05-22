@@ -34,7 +34,7 @@ This document defines baseline expectations for all development work in this pro
 ## Testing
 
 - **pytest** is the testing framework
-- Run tests with: `uv run pytest`
+- Run tests with: `uv run pytest -n auto`
 - Test files should follow `test_*.py` or `*_test.py` naming convention
 
 ## Development Workflow
@@ -42,7 +42,7 @@ This document defines baseline expectations for all development work in this pro
 1. Install dependencies: `uv sync`
 2. Run linting: `uv run ruff check .`
 3. Run type checking: `uv run mypy .` and/or `uv run pyright`
-4. Run tests: `uv run pytest`
+4. Run tests: `uv run pytest -n auto`
 
 
 ### Code Search
