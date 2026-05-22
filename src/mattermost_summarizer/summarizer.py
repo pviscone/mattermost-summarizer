@@ -11,6 +11,7 @@ from openhands.sdk import LocalConversation
 from mattermost_summarizer.agent import build_orchestrator_agent
 from mattermost_summarizer.client import MattermostClient
 from mattermost_summarizer.config import MattermostSummarizerConfig
+from mattermost_summarizer.critic import SummarizationCritic
 from mattermost_summarizer.exceptions import (
     AgentStuckError,
     PermalinkError,
@@ -114,11 +115,22 @@ class MattermostSummarizer:
         ):
             register_subagents(client)
 
+            critic = None
+            if self.config.critic_enabled:
+                critic = SummarizationCritic(
+                    llm_model=self.config.llm_model,
+                    llm_api_key=self.config.llm_api_key.get_secret_value(),
+                    llm_base_url=self.config.llm_base_url,
+                    level=level,
+                )
+
             agent = build_orchestrator_agent(
                 llm_model=self.config.llm_model,
                 llm_api_key=self.config.llm_api_key.get_secret_value(),
                 llm_base_url=self.config.llm_base_url,
                 level=level,
+                max_reference_depth=self.config.max_reference_depth,
+                critic=critic,
             )
 
             conv_ref: list[LocalConversation | None] = [None]

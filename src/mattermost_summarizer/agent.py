@@ -10,6 +10,8 @@ from openhands.sdk import LLM, Agent, AgentContext, Tool
 from pydantic import SecretStr
 
 if TYPE_CHECKING:
+    from openhands.sdk.critic import CriticBase
+
     from mattermost_summarizer.client import MattermostClient
     from mattermost_summarizer.levels import SummaryLevel
 
@@ -58,22 +60,22 @@ ORCHESTRATOR_PROMPT = """You are the orchestrator for a Mattermost conversation 
 Your job is to coordinate specialized sub-agents to gather context and produce a summary.
 
  Coordination Flow:
- 1. Parse the permalink URL from the user message
- 2. Delegate to the thread_fetcher sub-agent to fetch the root thread
- 3. Receive the fetched thread content and scan it for references:
-    - Mattermost permalinks (thread URLs)
-    - Launchpad bug URLs (bugs.launchpad.net/...)
-    - GitHub issue/PR URLs (github.com/...)
-    - File attachment references
- 4. Decide which references are relevant to follow based on the thread context
- 5. Delegate to appropriate sub-agents for relevant references:
-    - thread_fetcher: for Mattermost thread permalinks
-    - bug_researcher: for Launchpad bug URLs
-    - github_researcher: for GitHub issue/PR URLs
-    - file_fetcher: for Mattermost file attachments
- 6. Repeat steps 3-5 up to the maximum reference depth (default: 3)
- 7. Synthesize all gathered context into a coherent summary
- 8. Call the finish tool with the structured summary
+  1. Parse the permalink URL from the user message
+  2. Delegate to the thread_fetcher sub-agent to fetch the root thread
+  3. Receive the fetched thread content and scan it for references:
+     - Mattermost permalinks (thread URLs)
+     - Launchpad bug URLs (bugs.launchpad.net/...)
+     - GitHub issue/PR URLs (github.com/...)
+     - File attachment references
+  4. Decide which references are relevant to follow based on the thread context
+  5. Delegate to appropriate sub-agents for relevant references:
+     - thread_fetcher: for Mattermost thread permalinks
+     - bug_researcher: for Launchpad bug URLs
+     - github_researcher: for GitHub issue/PR URLs
+     - file_fetcher: for Mattermost file attachments
+  6. Repeat steps 3-5 up to the maximum reference depth (default: 3)
+  7. Synthesize all gathered context into a coherent summary
+  8. Call the finish tool with the structured summary
 
  Important constraints:
  - Do NOT fetch data directly - always delegate to the appropriate sub-agent
@@ -81,12 +83,19 @@ Your job is to coordinate specialized sub-agents to gather context and produce a
  - Only follow references that are relevant to understanding the thread
  - When in doubt, prefer following fewer references rather than more
  - Always delegate the root thread to thread_fetcher first
+ - Do NOT follow the same URL twice - keep track of followed URLs
 
  Reference types and their sub-agents:
  - Mattermost thread URLs (chat.example.com/team/pl/...) → thread_fetcher
  - Launchpad bugs (bugs.launchpad.net/...) → bug_researcher
  - GitHub issues/PRs (github.com/.../issues/..., github.com/.../pull/...) → github_researcher
  - Mattermost file attachments → file_fetcher
+
+ URL Classification Examples:
+ - "https://bugs.launchpad.net/ubuntu/+bug/12345" → bug_researcher
+ - "https://github.com/canonical/mattermost/issues/789" → github_researcher
+ - "https://github.com/canonical/mattermost/pull/456" → github_researcher
+ - "https://chat.example.com/team/pl/abc123" → thread_fetcher
 
  To delegate, you MUST use TWO steps:
 
@@ -240,6 +249,8 @@ def build_orchestrator_agent(
     llm_api_key: str,
     llm_base_url: str | None,
     level: SummaryLevel,
+    max_reference_depth: int = 3,
+    critic: CriticBase | None = None,
 ) -> Agent:
     """Build an orchestrator agent that delegates to sub-agents.
 
@@ -248,6 +259,8 @@ def build_orchestrator_agent(
         llm_api_key: API key for the LLM
         llm_base_url: Base URL for the LLM API (None = provider default)
         level: Summarization level (determines which finish tool to use)
+        max_reference_depth: Maximum recursion depth for following references
+        critic: Optional critic for iterative refinement
 
     Returns:
         Configured Agent instance with DelegateTool and finish tool
@@ -303,12 +316,16 @@ def build_orchestrator_agent(
         Tool(name="finish", params={}),
     ]
 
-    agent = Agent(
-        llm=llm,
-        tools=tools,
-        agent_context=AgentContext(system_message_suffix=ORCHESTRATOR_PROMPT),
-        include_default_tools=[],
-    )
+    agent_kwargs: dict[str, object] = {
+        "llm": llm,
+        "tools": tools,
+        "agent_context": AgentContext(system_message_suffix=ORCHESTRATOR_PROMPT),
+        "include_default_tools": [],
+    }
+    if critic is not None:
+        agent_kwargs["critic"] = critic
+
+    agent = Agent(**agent_kwargs)  # type: ignore[arg-type]
 
     return agent
 

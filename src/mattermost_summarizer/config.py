@@ -69,6 +69,22 @@ class MattermostSummarizerConfig(BaseSettings):
         default=SummaryLevel.NORMAL,
         description="Default summarization level (brief, normal, or detailed)",
     )
+    max_reference_depth: int = Field(
+        default=3,
+        description="Maximum recursion depth for following referenced URLs (0=disabled, default: 3)",
+    )
+    critic_enabled: bool = Field(
+        default=True,
+        description="Enable LLM critic for iterative refinement (default: true)",
+    )
+    critic_threshold: float = Field(
+        default=0.7,
+        description="Quality threshold (0-1) for accepting summaries (default: 0.7)",
+    )
+    critic_max_iterations: int = Field(
+        default=2,
+        description="Maximum critic revision rounds before giving up (default: 2)",
+    )
 
     @classmethod
     def from_config(cls, path: Path | str) -> "MattermostSummarizerConfig":
@@ -124,6 +140,14 @@ class MattermostSummarizerConfig(BaseSettings):
                 level_str = summarizer["default_level"]
                 if isinstance(level_str, str):
                     data["summarizer_default_level"] = SummaryLevel(level_str.lower())
+            if "max_reference_depth" in summarizer:
+                data["max_reference_depth"] = int(summarizer["max_reference_depth"])
+            if "critic_enabled" in summarizer:
+                data["critic_enabled"] = bool(summarizer["critic_enabled"])
+            if "critic_threshold" in summarizer:
+                data["critic_threshold"] = float(summarizer["critic_threshold"])
+            if "critic_max_iterations" in summarizer:
+                data["critic_max_iterations"] = int(summarizer["critic_max_iterations"])
 
         return cls(**data)
 

@@ -1,4 +1,28 @@
-"""Tools package for mattermost-summarizer."""
+"""Tools package for mattermost-summarizer.
+
+Tool Distribution Architecture (Multi-Agent):
+
+  Orchestrator Agent:
+    - delegate: DelegateTool for spawning sub-agents
+    - finish: Level-specific finish tool
+
+  Sub-Agent: thread_fetcher
+    - fetch_thread: Fetch Mattermost thread
+    - get_user: Get user details
+    - fetch_channel: Get channel context
+
+  Sub-Agent: bug_researcher
+    - fetch_launchpad_bug: Fetch Launchpad bug details
+
+  Sub-Agent: github_researcher
+    - fetch_github_issue: Fetch GitHub issue/PR details
+
+  Sub-Agent: file_fetcher
+    - fetch_file: Fetch file attachment content
+
+Note: Tools are no longer given to a single agent. Each sub-agent receives
+only the tools relevant to its specialty.
+"""
 
 from __future__ import annotations
 
