@@ -15,7 +15,9 @@
 ```
 # mattermost-summarizer.toml
 [llm]
-model    = "github/claude-haiku-4.5"
+model    = "github/gpt-5-mini"
 api_key  = "ghp_your_github_token"
-base_url = "https://api.githubcopilot.com"
 ```
+
+## Supported models
+As of 2026-05-22, only gpt-* models are supported due to a [liteLLM + Claude bug](https://github.com/BerriAI/litellm/issues/24565)

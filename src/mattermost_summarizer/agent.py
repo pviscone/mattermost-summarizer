@@ -101,6 +101,12 @@ def build_summarizer_agent(
     if extra_body:
         llm_kwargs["litellm_extra_body"] = extra_body
 
+    if llm_model.startswith("github_copilot/"):
+        llm_kwargs["extra_headers"] = {
+            "editor-version": "vscode/1.85.1",
+            "Copilot-Integration-Id": "vscode-chat",
+        }
+
     llm = LLM(**llm_kwargs)  # type: ignore[arg-type]
 
     agent = Agent(llm=llm, tools=list(tools), include_default_tools=[])

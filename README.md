@@ -33,11 +33,12 @@ url = "https://chat.canonical.com"
 token = "your-mattermost-token"
 
 [llm]
-model   = "github_copilot/claude-haiku-4.5"
+model   = "github_copilot/gpt-5-mini"
 api_key = "ghp_your_github_personal_access_token"
 ```
 
 Your GitHub PAT needs the `copilot` scope. No `base_url` is required — LiteLLM routes automatically.
+**Note**: Only gpt models are supported at this time.
 
 See [docs/gh-copilot.md](docs/gh-copilot.md) for more details.
 
