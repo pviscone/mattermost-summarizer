@@ -5,7 +5,7 @@ This document defines baseline expectations for all development work in this pro
 ## Base Language
 
 - **Python 3** is the base language for this project
-- Use `python3` as the interpreter reference
+- Use `uv run python` to run Python code (e.g., `uv run python script.py`)
 
 ## Package Management
 
