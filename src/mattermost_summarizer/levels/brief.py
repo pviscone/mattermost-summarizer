@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 from openhands.sdk.tool.tool import ToolAnnotations
-from pydantic import Field
+from pydantic import Field, field_validator
 from rich.console import Console
 from rich.text import Text
 
@@ -24,8 +24,11 @@ from mattermost_summarizer.levels.base import (
 USER_MESSAGE_ADDENDUM = """Level: BRIEF (minimal)
 
 Produce a brief summary with only:
-- TL;DR: 2-3 bullet points capturing the key outcomes (as a newline-separated string)
+- TL;DR: 2-3 bullet points capturing the key outcomes (as a newline-separated STRING — not a list or array)
 - Action items: decisions, todos, follow-ups (as a list of strings, optional)
+
+IMPORTANT: The tldr field must be a plain string with bullet points separated by newlines.
+Do NOT pass tldr as a JSON array or list — it must be a single string value.
 
 Do NOT produce a narrative, key findings, or participants list.
 Focus on the essential outcome only.
@@ -35,10 +38,20 @@ Do NOT fetch external URLs unless critical."""
 class BriefFinishAction(SummarizerFinishActionBase):
     """Finish action for brief summarization level."""
 
-    tldr: str = Field(description="Bullet-point TL;DR of the conversation (2-3 key points)")
+    tldr: str = Field(
+        description="Bullet-point TL;DR of the conversation (2-3 key points). Must be a single string, not a list."
+    )
     action_items: list[str] = Field(
         default_factory=list, description="Decisions, todos, follow-ups, or assignments mentioned"
     )
+
+    @field_validator("tldr", mode="before")
+    @classmethod
+    def coerce_tldr_to_str(cls, v: object) -> str:
+        """Coerce tldr to a string if the LLM returns a list."""
+        if isinstance(v, list):
+            return "\n".join(str(item) for item in v)  # type: ignore[union-attr]
+        return str(v) if not isinstance(v, str) else v
 
 
 class BriefFinishTool(SummarizerFinishToolBase):
@@ -48,7 +61,9 @@ class BriefFinishTool(SummarizerFinishToolBase):
     def _get_description(cls) -> str:
         return (
             "Call this tool when you have completed a brief summarization. "
-            "This tool accepts only TL;DR (2-3 bullet points) and action items. "
+            "This tool accepts only TL;DR (2-3 bullet points as a single newline-separated STRING, not a list) "
+            "and action items. "
+            "IMPORTANT: tldr must be a plain string. Do not pass a list or array for tldr. "
             "Do not include narrative, key findings, or participants."
         )
 

@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
-import pytest
+from typing import Any
 
 from mattermost_summarizer.levels import (
     BriefFinishAction,
-    BriefSummaryResult,
     DetailedFinishAction,
-    DetailedSummaryResult,
     NormalFinishAction,
-    NormalSummaryResult,
     SummarizerFinishActionBase,
-    SummaryMeta,
 )
 from mattermost_summarizer.summarizer import (
     _extract_finish_action,
@@ -22,9 +16,9 @@ from mattermost_summarizer.summarizer import (
 
 
 class MockEvent:
-    def __init__(self, action: Optional[Any] = None, observation: Optional[Any] = None) -> None:
-        self.action: Optional[Any] = action
-        self.observation: Optional[Any] = observation
+    def __init__(self, action: Any | None = None, observation: Any | None = None) -> None:
+        self.action: Any | None = action
+        self.observation: Any | None = observation
 
 
 class MockConversationState:
@@ -37,13 +31,13 @@ class MockConversationState:
 
 
 class MockConversation:
-    def __init__(self, events: list[MockEvent], stuck_detector: Optional[Any] = None) -> None:
+    def __init__(self, events: list[MockEvent], stuck_detector: Any | None = None) -> None:
         self.state: MockConversationState = MockConversationState(events)
         self._paused: bool = False
-        self._stuck_detector: Optional[Any] = stuck_detector
+        self._stuck_detector: Any | None = stuck_detector
 
     @property
-    def stuck_detector(self) -> Optional[Any]:
+    def stuck_detector(self) -> Any | None:
         return self._stuck_detector
 
     def pause(self) -> None:
@@ -62,7 +56,7 @@ class TestOnFinishCallback:
     """Tests for the _on_finish_callback closure inside summarize()."""
 
     def _build_callback(self):
-        conv_ref: list[Optional[MockConversation]] = [None]
+        conv_ref: list[MockConversation | None] = [None]
         finish_seen_ref: list[bool] = [False]
 
         def _on_finish_callback(event: MockEvent) -> None:

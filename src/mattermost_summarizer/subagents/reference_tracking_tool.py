@@ -111,14 +111,17 @@ class ReferenceTrackingExecutor(ToolExecutor[ReferenceTrackingAction, ReferenceT
         if cmd == "mark_followed":
             if not action.url:
                 return ReferenceTrackingObservation(command=cmd, error="URL required for mark_followed command")
-            if not self._tracker.can_follow_deeper():
-                return ReferenceTrackingObservation(
-                    command=cmd,
-                    url=action.url,
-                    error=f"Cannot follow URL: maximum depth ({self._tracker.max_depth}) reached. "
-                    f"Current depth: {self._tracker.current_depth}",
-                )
-            self._tracker.mark_followed(action.url)
+            # Hold the lock across the check-then-act to prevent TOCTOU races
+            # when tools run concurrently.
+            with self._tracker.lock():
+                if not self._tracker.can_follow_deeper():
+                    return ReferenceTrackingObservation(
+                        command=cmd,
+                        url=action.url,
+                        error=f"Cannot follow URL: maximum depth ({self._tracker.max_depth}) reached. "
+                        f"Current depth: {self._tracker.current_depth}",
+                    )
+                self._tracker.mark_followed(action.url)
             return ReferenceTrackingObservation(command=cmd, url=action.url, result="URL marked as followed")
 
         if cmd == "is_followed":

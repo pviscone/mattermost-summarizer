@@ -13,6 +13,11 @@ from pathlib import Path
 logging.getLogger("litellm").setLevel(logging.ERROR)
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:5000"
+os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = (
+    "x-mlflow-experiment-id=0"  # Replace "123" with your MLflow experiment ID
+)
+os.environ["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] = "http/protobuf"
 
 def main() -> int:
     from mattermost_summarizer.utils import cleanup_external_loggers, setup_logging

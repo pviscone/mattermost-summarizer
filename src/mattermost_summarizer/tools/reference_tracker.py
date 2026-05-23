@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from urllib.parse import urlparse
@@ -31,32 +34,54 @@ class ClassifiedUrl:
 
 @dataclass
 class ReferenceTracker:
-    """Tracks followed references and depth for recursive following."""
+    """Tracks followed references and depth for recursive following.
+
+    All public methods are individually thread-safe.  For compound
+    check-then-act operations (e.g. ``can_follow_deeper`` → ``mark_followed``)
+    use the :meth:`lock` context manager to hold the internal lock across the
+    entire compound operation:
+
+        with tracker.lock:
+            if tracker.can_follow_deeper():
+                tracker.mark_followed(url)
+    """
 
     followed_urls: set[str] = field(default_factory=lambda: set())
     current_depth: int = 0
     max_depth: int = 3
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
+
+    @contextmanager
+    def lock(self) -> Generator[None, None, None]:
+        """Context manager that holds the internal lock for compound operations."""
+        with self._lock:
+            yield
 
     def has_been_followed(self, url: str) -> bool:
         """Check if a URL has already been followed."""
-        return url in self.followed_urls
+        with self._lock:
+            return url in self.followed_urls
 
     def mark_followed(self, url: str) -> None:
         """Mark a URL as followed."""
-        self.followed_urls.add(url)
+        with self._lock:
+            self.followed_urls.add(url)
 
     def can_follow_deeper(self) -> bool:
         """Check if we can follow another level of references."""
-        return self.current_depth < self.max_depth
+        with self._lock:
+            return self.current_depth < self.max_depth
 
     def increment_depth(self) -> None:
         """Increment the depth counter."""
-        self.current_depth += 1
+        with self._lock:
+            self.current_depth += 1
 
     def reset(self) -> None:
         """Reset tracker state for a new summary operation."""
-        self.followed_urls.clear()
-        self.current_depth = 0
+        with self._lock:
+            self.followed_urls.clear()
+            self.current_depth = 0
 
 
 MATTERMOST_THREAD_PATTERNS = [
@@ -83,6 +108,22 @@ MATTERMOST_FILE_PATTERNS = [
 ]
 
 
+def _sanitize_url(url: str) -> str:
+    """Sanitize a URL to avoid parser errors.
+
+    Replaces bracketed IPv6 literals (e.g. http://[fd00::1]/path) with a
+    placeholder so downstream URL parsers don't raise "Invalid IPv6 URL".
+
+    Args:
+        url: Raw URL string
+
+    Returns:
+        Sanitized URL safe for urlparse
+    """
+    # Replace bracketed IPv6 addresses with a placeholder hostname
+    return re.sub(r"\[([0-9a-fA-F:]+)\]", "ipv6-placeholder", url)
+
+
 def classify_url(url: str) -> ReferenceType:
     """Classify a URL by its type.
 
@@ -92,7 +133,7 @@ def classify_url(url: str) -> ReferenceType:
     Returns:
         ReferenceType enum value
     """
-    parsed = urlparse(url)
+    parsed = urlparse(_sanitize_url(url))
     netloc = parsed.netloc.lower()
     path = parsed.path.lower()
 

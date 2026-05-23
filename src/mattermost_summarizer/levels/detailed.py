@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 from openhands.sdk.tool.tool import ToolAnnotations
-from pydantic import Field
+from pydantic import Field, field_validator
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
@@ -26,13 +26,16 @@ from mattermost_summarizer.levels.base import (
 USER_MESSAGE_ADDENDUM = """Level: DETAILED (comprehensive)
 
 Produce a thorough summary with all fields:
-- TL;DR: 3-5 bullet points capturing key outcomes (as a newline-separated string)
+- TL;DR: 3-5 bullet points capturing key outcomes (as a newline-separated STRING — not a list or array)
 - Key Findings: Important insights (as a list of strings)
 - Narrative: Detailed chronological walkthrough noting individual contributions (as a single string)
 - Action Items: Decisions, todos, follow-ups (as a list of strings)
 - Participants: List of contributors (as a list of strings)
 - Open Questions: Unresolved issues or items needing follow-up (as a list of strings)
 - Context Sources: URLs, links, or external references mentioned (as a list of strings)
+
+IMPORTANT: The tldr field must be a plain string with bullet points separated by newlines.
+Do NOT pass tldr as a JSON array or list — it must be a single string value.
 
 Be thorough. Fetch referenced URLs for additional context.
 List any open questions or unresolved items clearly.
@@ -42,7 +45,9 @@ Document the sources of key information."""
 class DetailedFinishAction(SummarizerFinishActionBase):
     """Finish action for detailed summarization level."""
 
-    tldr: str = Field(description="Bullet-point TL;DR of the conversation (3-5 key points)")
+    tldr: str = Field(
+        description="Bullet-point TL;DR of the conversation (3-5 key points). Must be a single string, not a list."
+    )
     key_findings: list[str] = Field(
         default_factory=list, description="Key findings or insights discovered in the conversation"
     )
@@ -56,6 +61,14 @@ class DetailedFinishAction(SummarizerFinishActionBase):
         default_factory=list, description="URLs, links, or external references mentioned in the thread"
     )
 
+    @field_validator("tldr", mode="before")
+    @classmethod
+    def coerce_tldr_to_str(cls, v: object) -> str:
+        """Coerce tldr to a string if the LLM returns a list."""
+        if isinstance(v, list):
+            return "\n".join(str(item) for item in v)  # type: ignore[union-attr]
+        return str(v) if not isinstance(v, str) else v
+
 
 class DetailedFinishTool(SummarizerFinishToolBase):
     """Tool for detailed summarization completion."""
@@ -64,8 +77,9 @@ class DetailedFinishTool(SummarizerFinishToolBase):
     def _get_description(cls) -> str:
         return (
             "Call this tool when you have completed a detailed summarization. "
-            "This tool accepts TL;DR, key findings, narrative, action items, participants, "
-            "open questions, and context sources."
+            "This tool accepts TL;DR (3-5 bullet points as a single newline-separated STRING, not a list), "
+            "key findings, narrative, action items, participants, open questions, and context sources. "
+            "IMPORTANT: tldr must be a plain string. Do not pass a list or array for tldr."
         )
 
     @classmethod

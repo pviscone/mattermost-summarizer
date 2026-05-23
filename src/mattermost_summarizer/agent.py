@@ -365,6 +365,7 @@ def build_orchestrator_agent(
         "tools": tools,
         "agent_context": AgentContext(system_message_suffix=ORCHESTRATOR_PROMPT),
         "include_default_tools": [],
+        "tool_concurrency_limit": 4,
     }
     if critic is not None:
         agent_kwargs["critic"] = critic

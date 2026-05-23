@@ -15,8 +15,14 @@ THREAD_FETCHER_PROMPT = """You are a thread researcher for Mattermost conversati
 
 Your job:
 1. Fetch the specified Mattermost thread using the FetchThread tool
-2. For each user in the thread, call GetUser to get their display name
-3. Call FetchChannel to get channel context if needed
+2. FetchThread already resolves user IDs to display names — do NOT call GetUser
+   unless you need additional profile details for a specific user.
+   If you do call GetUser, you MUST pass the opaque user_id field (e.g. "abc123xyz")
+   from the thread data — never pass a display name, @username handle, or
+   human-readable name as the user_id.
+3. Call FetchChannel only if you need channel purpose/header context beyond what
+   FetchThread provides. If calling FetchChannel, use the channel_id field returned
+   by FetchThread — do NOT guess a channel name or team name.
 4. Scan the thread content for any URLs or references (Mattermost
    permalinks, Launchpad bugs, GitHub issues/PRs, file attachments)
 5. Call the finish tool with a text summary that includes:

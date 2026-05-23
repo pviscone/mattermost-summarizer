@@ -128,10 +128,12 @@ Score guide:
             if obs is not None:
                 to_llm_content = getattr(obs, "to_llm_content", None)
                 if to_llm_content is not None:
-                    content = to_llm_content()
-                    if hasattr(content, "text") and isinstance(content.text, str):
-                        if len(content.text) > 50:
-                            context_parts.append(content.text)
+                    content = to_llm_content
+                    if isinstance(content, list) and content:
+                        first = content[0]  # type: ignore[index]
+                        text = getattr(first, "text", None)  # type: ignore[arg-type]
+                        if isinstance(text, str) and len(text) > 50:
+                            context_parts.append(text)
                 outputs = getattr(obs, "outputs", None)
                 if isinstance(outputs, dict):
                     for agent_id, output in outputs.items():  # type: ignore[union-attr]
