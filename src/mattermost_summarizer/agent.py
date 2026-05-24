@@ -231,7 +231,7 @@ def build_orchestrator_agent(
     llm_base_url: str | None,
     level: SummaryLevel,
     max_reference_depth: int = 3,
-    max_sub_agents: int = 20,
+    max_sub_agents: int = 500,
     critic: CriticBase | None = None,
     tracker: ReferenceTracker | None = None,
 ) -> Agent:
@@ -243,7 +243,7 @@ def build_orchestrator_agent(
         llm_base_url: Base URL for the LLM API (None = provider default)
         level: Summarization level (determines which finish tool to use)
         max_reference_depth: Maximum recursion depth for following references
-        max_sub_agents: Maximum number of sub-agents that can be spawned (default: 20)
+        max_sub_agents: Maximum number of sub-agents that can be spawned (default: 500)
         critic: Optional critic for iterative refinement
 
     Returns:

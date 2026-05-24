@@ -875,7 +875,7 @@ class TestMaxSubAgentsConfig:
     """Tests for max_sub_agents config field and FetchReferenceExecutor max_children."""
 
     def test_config_default_max_sub_agents(self) -> None:
-        """Test that MattermostSummarizerConfig.max_sub_agents defaults to 20."""
+        """Test that MattermostSummarizerConfig.max_sub_agents defaults to 500."""
         from unittest.mock import patch
 
         from mattermost_summarizer.config import MattermostSummarizerConfig
@@ -889,7 +889,7 @@ class TestMaxSubAgentsConfig:
             },
         ):
             config = MattermostSummarizerConfig()
-            assert config.max_sub_agents == 20
+            assert config.max_sub_agents == 500
 
     def test_config_custom_max_sub_agents(self) -> None:
         """Test that MattermostSummarizerConfig.max_sub_agents can be overridden."""

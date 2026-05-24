@@ -86,8 +86,8 @@ class MattermostSummarizerConfig(BaseSettings):
         description="Maximum critic revision rounds before giving up (default: 2)",
     )
     max_sub_agents: int = Field(
-        default=20,
-        description="Maximum number of sub-agents that can be spawned during reference following (default: 20)",
+        default=500,
+        description="Maximum number of sub-agents that can be spawned during reference following (default: 500)",
     )
 
     @classmethod
