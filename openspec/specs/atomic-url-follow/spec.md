@@ -38,9 +38,11 @@ The operation SHALL execute under the tracker lock to prevent TOCTOU races in co
 - **THEN** exactly one returns `success` and one returns `already_followed`
 - **THEN** depth is incremented exactly once
 
-#### Note: Depth counts total URLs followed, not recursion levels
-`follow_url` increments depth once per successful call, regardless of how many URLs are followed at the same recursion level. This matches the existing 4-step protocol's behaviour and is intentional: `max_reference_depth` limits total context-gathering work, not nesting depth.
+#### Note: Depth is per-URL nesting level, not a global counter
+Each URL is assigned a depth level when it is pre-registered by `FetchReferenceExecutor`. The root thread is at depth 0. URLs found in its result are pre-registered at depth 1. URLs found in those results are pre-registered at depth 2, and so on.
 
-With `max_depth=3`, following 3 URLs at depth 0 will exhaust the depth budget after the third `follow_url` call, returning `depth_exceeded` for any further URLs.
+Sibling URLs discovered at the same nesting level all share the same depth value. Following 10 URLs at depth 1 does NOT consume depth budget — all 10 remain at depth 1. Only traversing deeper (following a URL found *within* one of those results) increments the depth to 2.
 
-If per-level semantics are desired in the future, `increment_depth` should be decoupled from `follow_url` and called once by the Python depth loop after all same-level delegations complete — but that is out of scope for this change.
+`max_reference_depth` therefore limits **nesting depth** (how many hops from the root), not total work. With `max_depth=3`, the system can follow arbitrarily many sibling references at each level, but will not follow references found inside depth-2 results (those would be at depth 3, which equals max_depth and is rejected).
+
+This is distinct from what was originally described (a global total-URL counter). The per-URL nesting model was implemented because it more naturally matches the intent of "how many levels deep should we follow links".

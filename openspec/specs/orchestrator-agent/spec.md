@@ -30,6 +30,12 @@ The orchestrator agent:
 - **WHEN** a thread references multiple URLs
 - **THEN** it successfully delegates to multiple fresh sub-agents (e.g. 10 GitHub PRs) without crashing on `max_children` limits
 
+#### Scenario: Orchestrator fetches sibling references in parallel
+- **WHEN** the References block lists N URLs at the same depth level
+- **THEN** the orchestrator SHOULD call `fetch_reference` for all N URLs in a single LLM response (parallel tool calls)
+- **THEN** the SDK executes the calls concurrently, not sequentially
+- **NOTE** This requires all tools exposed to the orchestrator to override `declared_resources()` on their `ToolDefinition` returning `DeclaredResources(declared=True)` — without this, the SDK's default `tool:<name>` mutex forces sequential execution regardless of `tool_concurrency_limit`
+
 ### Requirement: Orchestrator coordination loop
 The orchestrator agent SHALL follow a coordination loop driven by the `FetchReferenceExecutor` and the enriched References block.
 
