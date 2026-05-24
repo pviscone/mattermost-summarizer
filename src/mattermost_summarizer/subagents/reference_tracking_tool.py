@@ -78,18 +78,28 @@ class ReferenceTrackingExecutor(ToolExecutor[ReferenceTrackingAction, ReferenceT
                         outcome="already_followed",
                         result="URL has already been followed",
                     )
-                # Per-URL depth: look up registered depth (root URLs have None → 0)
+                # Per-URL depth: look up registered depth (root URLs have None → always allowed)
                 url_depth = self._tracker.get_depth_for(action.url)
-                effective_depth = url_depth if url_depth is not None else 0
-                if effective_depth >= self._tracker.max_depth:
+                if url_depth is not None and url_depth >= self._tracker.max_depth:
                     return ReferenceTrackingObservation(
                         command=cmd,
                         url=action.url,
                         outcome="depth_exceeded",
-                        current_depth=effective_depth,
+                        current_depth=url_depth,
                         max_depth=self._tracker.max_depth,
                         result=f"Maximum depth ({self._tracker.max_depth}) reached",
                     )
+                # When max_depth=0, only the root URL may be fetched; reject unregistered URLs afterward
+                if url_depth is None and self._tracker.max_depth == 0 and len(self._tracker.followed_urls) > 0:
+                    return ReferenceTrackingObservation(
+                        command=cmd,
+                        url=action.url,
+                        outcome="depth_exceeded",
+                        current_depth=0,
+                        max_depth=self._tracker.max_depth,
+                        result="No reference following allowed at this summary level (max_depth=0).",
+                    )
+                effective_depth = url_depth if url_depth is not None else 0
                 self._tracker.mark_followed(action.url, effective_depth)
             return ReferenceTrackingObservation(
                 command=cmd,

@@ -68,11 +68,16 @@ class FetchReferenceExecutor(ToolExecutor[FetchReferenceAction, FetchReferenceOb
                 return FetchReferenceObservation(result="", error="URL has already been followed (cycle prevented).")
 
             url_depth = self._tracker.get_depth_for(action.url)
-            # Root URLs (never registered) get depth 0 — always allowed
+            # Root URLs (never registered) are always allowed
             effective_depth = url_depth if url_depth is not None else 0
-            if effective_depth >= self._tracker.max_depth:
+            if url_depth is not None and url_depth >= self._tracker.max_depth:
                 return FetchReferenceObservation(
                     result="", error=f"Maximum reference depth ({self._tracker.max_depth}) reached."
+                )
+            # When max_depth=0, only the root URL may be fetched; reject unregistered URLs afterward
+            if url_depth is None and self._tracker.max_depth == 0 and len(self._tracker.followed_urls) > 0:
+                return FetchReferenceObservation(
+                    result="", error="No reference following allowed at this summary level (max_depth=0)."
                 )
 
         # Spawn the appropriate sub-agent with a unique ID

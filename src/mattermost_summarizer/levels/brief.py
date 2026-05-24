@@ -32,7 +32,9 @@ Do NOT pass tldr as a JSON array or list — it must be a single string value.
 
 Do NOT produce a narrative, key findings, or participants list.
 Focus on the essential outcome only.
-Do NOT fetch external URLs unless critical."""
+Do NOT fetch external URLs unless critical.
+IMPORTANT: At this level you MUST NOT follow any reference URLs.
+Fetch only the root thread and produce your summary immediately."""
 
 
 class BriefFinishAction(SummarizerFinishActionBase):

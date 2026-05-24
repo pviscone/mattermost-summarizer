@@ -18,6 +18,9 @@ from mattermost_summarizer.exceptions import (
     PermalinkError,
 )
 from mattermost_summarizer.levels import (
+    BRIEF_ADDENDUM,
+    DETAILED_ADDENDUM,
+    NORMAL_ADDENDUM,
     AnySummaryResult,
     BriefSummaryResult,
     DetailedSummaryResult,
@@ -107,7 +110,14 @@ class MattermostSummarizer:
         except ValueError as e:
             raise PermalinkError(str(e)) from e
 
-        message = f"Summarize this Mattermost thread: {permalink_url}\nThe post ID is: {post_id}"
+        _addendum_by_level: dict[SummaryLevel, str] = {
+            SummaryLevel.BRIEF: BRIEF_ADDENDUM,
+            SummaryLevel.NORMAL: NORMAL_ADDENDUM,
+            SummaryLevel.DETAILED: DETAILED_ADDENDUM,
+        }
+        level_addendum = _addendum_by_level[level]
+
+        message = f"Summarize this Mattermost thread: {permalink_url}\nThe post ID is: {post_id}\n\n{level_addendum}"
 
         visualizer = FileConversationVisualizer("agent-trace.log")
 
@@ -129,7 +139,7 @@ class MattermostSummarizer:
                     level=level,
                 )
 
-            _DEPTH_BY_LEVEL: dict[SummaryLevel, int] = {
+            _depth_by_level: dict[SummaryLevel, int] = {
                 SummaryLevel.BRIEF: 0,
                 SummaryLevel.NORMAL: 1,
                 SummaryLevel.DETAILED: 3,
@@ -137,7 +147,7 @@ class MattermostSummarizer:
             effective_depth = (
                 self.config.max_reference_depth
                 if self.config.max_reference_depth is not None
-                else _DEPTH_BY_LEVEL[level]
+                else _depth_by_level[level]
             )
 
             tracker = ReferenceTracker(max_depth=effective_depth)
