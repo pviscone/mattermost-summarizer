@@ -188,3 +188,25 @@ class SummarizerFinishExecutor(ToolExecutor[SummarizerFinishAction, SummarizerFi
     def __call__(self, action: SummarizerFinishAction, conversation=None) -> SummarizerFinishObservation:
         return SummarizerFinishObservation(success=True, summary_provided=True)
 ```
+
+### Parallel Tool Execution
+
+When executing tools concurrently (e.g. `tool_concurrency_limit > 1` on the `Agent`), the OpenHands SDK `ParallelToolExecutor` restricts concurrency to prevent race conditions. 
+
+By default, the SDK conservatively assumes tools are not thread-safe. If a tool does not explicitly declare resources, the SDK assigns a global mutex on the tool's name (`tool:<name>`), **forcing sequential execution** regardless of the concurrency limit.
+
+To enable true parallel execution for a tool, you must override `declared_resources` on the `ToolDefinition` to return `DeclaredResources` with `declared=True`.
+
+```python
+from openhands.sdk.tool.tool import DeclaredResources
+
+class FetchReferenceTool(ToolDefinition[FetchReferenceAction, FetchReferenceObservation]):
+    name = "fetch_reference"
+
+    def declared_resources(self, action: FetchReferenceAction) -> DeclaredResources:
+        # For thread-safe tools with no shared resource contention
+        return DeclaredResources(keys=(), declared=True)
+        
+        # Alternatively, lock on specific inputs (e.g., prevent duplicate fetches of same URL)
+        # return DeclaredResources(keys=(f"url:{action.url}",), declared=True)
+```
