@@ -85,6 +85,10 @@ class MattermostSummarizerConfig(BaseSettings):
         default=2,
         description="Maximum critic revision rounds before giving up (default: 2)",
     )
+    max_sub_agents: int = Field(
+        default=20,
+        description="Maximum number of sub-agents that can be spawned during reference following (default: 20)",
+    )
 
     @classmethod
     def from_config(cls, path: Path | str) -> "MattermostSummarizerConfig":
@@ -148,6 +152,8 @@ class MattermostSummarizerConfig(BaseSettings):
                 data["critic_threshold"] = float(summarizer["critic_threshold"])
             if "critic_max_iterations" in summarizer:
                 data["critic_max_iterations"] = int(summarizer["critic_max_iterations"])
+            if "max_sub_agents" in summarizer:
+                data["max_sub_agents"] = int(summarizer["max_sub_agents"])
 
         return cls(**data)
 

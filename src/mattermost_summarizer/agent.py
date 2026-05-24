@@ -231,6 +231,7 @@ def build_orchestrator_agent(
     llm_base_url: str | None,
     level: SummaryLevel,
     max_reference_depth: int = 3,
+    max_sub_agents: int = 20,
     critic: CriticBase | None = None,
     tracker: ReferenceTracker | None = None,
 ) -> Agent:
@@ -242,6 +243,7 @@ def build_orchestrator_agent(
         llm_base_url: Base URL for the LLM API (None = provider default)
         level: Summarization level (determines which finish tool to use)
         max_reference_depth: Maximum recursion depth for following references
+        max_sub_agents: Maximum number of sub-agents that can be spawned (default: 20)
         critic: Optional critic for iterative refinement
 
     Returns:
@@ -295,7 +297,7 @@ def build_orchestrator_agent(
 
     if tracker is None:
         tracker = ReferenceTracker(max_depth=max_reference_depth)
-    fetch_ref_tool_def = FetchReferenceTool.create(tracker)[0]
+    fetch_ref_tool_def = FetchReferenceTool.create(tracker, max_children=max_sub_agents)[0]
     oh_sdk.register_tool("fetch_reference", fetch_ref_tool_def)  # type: ignore[arg-type]
 
     tools: list[Tool] = [

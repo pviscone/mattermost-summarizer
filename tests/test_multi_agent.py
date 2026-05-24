@@ -869,3 +869,79 @@ class TestPerUrlDepth:
         assert url not in tracker.pending_urls
         assert url in tracker.followed_urls
         assert tracker.has_been_followed(url)
+
+
+class TestMaxSubAgentsConfig:
+    """Tests for max_sub_agents config field and FetchReferenceExecutor max_children."""
+
+    def test_config_default_max_sub_agents(self) -> None:
+        """Test that MattermostSummarizerConfig.max_sub_agents defaults to 20."""
+        from unittest.mock import patch
+
+        from mattermost_summarizer.config import MattermostSummarizerConfig
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MM_MATTERMOST_URL": "https://chat.example.com",
+                "MM_MATTERMOST_TOKEN": "tok",
+                "MM_LLM_API_KEY": "key",
+            },
+        ):
+            config = MattermostSummarizerConfig()
+            assert config.max_sub_agents == 20
+
+    def test_config_custom_max_sub_agents(self) -> None:
+        """Test that MattermostSummarizerConfig.max_sub_agents can be overridden."""
+        from unittest.mock import patch
+
+        from mattermost_summarizer.config import MattermostSummarizerConfig
+
+        with patch.dict(
+            "os.environ",
+            {
+                "MM_MATTERMOST_URL": "https://chat.example.com",
+                "MM_MATTERMOST_TOKEN": "tok",
+                "MM_LLM_API_KEY": "key",
+                "MM_MAX_SUB_AGENTS": "50",
+            },
+        ):
+            config = MattermostSummarizerConfig()
+            assert config.max_sub_agents == 50
+
+    def test_fetch_reference_executor_passes_max_children(self) -> None:
+        """Test that FetchReferenceExecutor passes max_children to DelegateExecutor."""
+        from unittest.mock import patch
+
+        from mattermost_summarizer.subagents.fetch_reference_tool import FetchReferenceExecutor
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=3)
+        captured_kwargs: dict = {}
+
+        def mock_delegate_init(self, max_children=5, **kwargs):
+            captured_kwargs["max_children"] = max_children
+
+        with patch("openhands.tools.delegate.impl.DelegateExecutor.__init__", mock_delegate_init):
+            FetchReferenceExecutor(tracker=tracker, max_children=42)
+
+        assert captured_kwargs.get("max_children") == 42
+
+    def test_fetch_reference_tool_create_passes_max_children(self) -> None:
+        """Test that FetchReferenceTool.create() passes max_children to the executor."""
+        from unittest.mock import patch
+
+        from mattermost_summarizer.subagents.fetch_reference_tool import FetchReferenceTool
+        from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
+
+        tracker = ReferenceTracker(max_depth=3)
+        captured_kwargs: dict = {}
+
+        def mock_delegate_init(self, max_children=5, **kwargs):
+            captured_kwargs["max_children"] = max_children
+
+        with patch("openhands.tools.delegate.impl.DelegateExecutor.__init__", mock_delegate_init):
+            tools = FetchReferenceTool.create(tracker=tracker, max_children=15)
+
+        assert len(tools) == 1
+        assert captured_kwargs.get("max_children") == 15

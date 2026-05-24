@@ -137,6 +137,7 @@ class MattermostSummarizer:
                 llm_base_url=self.config.llm_base_url,
                 level=level,
                 max_reference_depth=self.config.max_reference_depth,
+                max_sub_agents=self.config.max_sub_agents,
                 critic=critic,
                 tracker=tracker,
             )

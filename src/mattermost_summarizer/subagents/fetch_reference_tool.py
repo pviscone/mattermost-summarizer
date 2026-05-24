@@ -40,7 +40,7 @@ class FetchReferenceObservation(Observation):
 class FetchReferenceExecutor(ToolExecutor[FetchReferenceAction, FetchReferenceObservation]):
     """Executor for fetching references (handles cycle tracking + sub-agent delegation)."""
 
-    def __init__(self, tracker: ReferenceTracker | None = None) -> None:
+    def __init__(self, tracker: ReferenceTracker | None = None, max_children: int = 20) -> None:
         from mattermost_summarizer.tools.reference_tracker import ReferenceTracker
 
         self._tracker = tracker or ReferenceTracker()
@@ -48,7 +48,7 @@ class FetchReferenceExecutor(ToolExecutor[FetchReferenceAction, FetchReferenceOb
         # We instantiate a DelegateExecutor to handle the sub-agent interaction
         from openhands.tools.delegate.impl import DelegateExecutor
 
-        self._delegate_executor = DelegateExecutor()
+        self._delegate_executor = DelegateExecutor(max_children=max_children)
         self._agent_counter = itertools.count()
 
     def __call__(self, action: FetchReferenceAction, conversation: object | None = None) -> FetchReferenceObservation:
@@ -136,7 +136,9 @@ class FetchReferenceTool(ToolDefinition[FetchReferenceAction, FetchReferenceObse
     name = "fetch_reference"
 
     @classmethod
-    def create(cls, tracker: ReferenceTracker | None = None, **kwargs: object) -> Sequence[FetchReferenceTool]:
+    def create(
+        cls, tracker: ReferenceTracker | None = None, max_children: int = 20, **kwargs: object
+    ) -> Sequence[FetchReferenceTool]:
         return [
             cls(
                 description=(
@@ -147,7 +149,7 @@ class FetchReferenceTool(ToolDefinition[FetchReferenceAction, FetchReferenceObse
                 ),
                 action_type=FetchReferenceAction,
                 observation_type=FetchReferenceObservation,
-                executor=FetchReferenceExecutor(tracker),
+                executor=FetchReferenceExecutor(tracker, max_children=max_children),
             )
         ]
 
