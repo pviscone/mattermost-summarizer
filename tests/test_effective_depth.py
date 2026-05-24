@@ -14,6 +14,18 @@ from pydantic import HttpUrl, SecretStr
 from mattermost_summarizer.config import MattermostSummarizerConfig
 from mattermost_summarizer.levels import SummaryLevel
 from mattermost_summarizer.summarizer import MattermostSummarizer
+from mattermost_summarizer.tools.fetch_thread.impl import FetchThreadObservation
+
+
+def _fake_fetch_obs() -> FetchThreadObservation:
+    """Return a minimal FetchThreadObservation for testing."""
+    return FetchThreadObservation(
+        root_post={"author_id": "u1", "message": "hello", "created_at": "2024-01-01"},
+        replies=[],
+        channel_id="chan1",
+        channel_name="general",
+        total_replies=0,
+    )
 
 
 def _make_config(max_reference_depth: int | None = None) -> MattermostSummarizerConfig:
@@ -56,6 +68,7 @@ class TestEffectiveDepthDefaults:
         with (
             patch("mattermost_summarizer.summarizer.ReferenceTracker", CapturingTracker),
             patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.FetchThreadExecutor") as mock_executor_cls,
             patch("mattermost_summarizer.summarizer.register_subagents"),
             patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
             patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
@@ -72,6 +85,8 @@ class TestEffectiveDepthDefaults:
             mock_client = MagicMock()
             mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            mock_executor_cls.return_value.return_value = _fake_fetch_obs()
 
             # Make the conversation run loop short-circuit by raising on run()
             mock_conv.run.side_effect = RuntimeError("stop")
@@ -109,6 +124,7 @@ class TestEffectiveDepthExplicitConfig:
         with (
             patch("mattermost_summarizer.summarizer.ReferenceTracker", CapturingTracker),
             patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.FetchThreadExecutor") as mock_executor_cls,
             patch("mattermost_summarizer.summarizer.register_subagents"),
             patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
             patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
@@ -123,6 +139,8 @@ class TestEffectiveDepthExplicitConfig:
             mock_client = MagicMock()
             mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            mock_executor_cls.return_value.return_value = _fake_fetch_obs()
 
             try:
                 summarizer.summarize("https://chat.example.com/team/pl/post123", level=level)
@@ -154,6 +172,7 @@ class TestEffectiveDepthExplicitConfig:
         with (
             patch("mattermost_summarizer.summarizer.ReferenceTracker", CapturingTracker),
             patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.FetchThreadExecutor") as mock_executor_cls,
             patch("mattermost_summarizer.summarizer.register_subagents"),
             patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
             patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
@@ -168,6 +187,8 @@ class TestEffectiveDepthExplicitConfig:
             mock_client = MagicMock()
             mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
             mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+            mock_executor_cls.return_value.return_value = _fake_fetch_obs()
 
             try:
                 summarizer.summarize("https://chat.example.com/team/pl/post123", level=SummaryLevel.DETAILED)

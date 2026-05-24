@@ -30,6 +30,7 @@ from mattermost_summarizer.levels import (
     SummaryMeta,
 )
 from mattermost_summarizer.subagents import register_subagents
+from mattermost_summarizer.tools.fetch_thread.impl import FetchThreadAction, FetchThreadExecutor
 from mattermost_summarizer.tools.reference_tracker import (
     ClassifiedUrl,
     ReferenceTracker,
@@ -117,8 +118,6 @@ class MattermostSummarizer:
         }
         level_addendum = _addendum_by_level[level]
 
-        message = f"Summarize this Mattermost thread: {permalink_url}\nThe post ID is: {post_id}\n\n{level_addendum}"
-
         visualizer = FileConversationVisualizer("agent-trace.log")
 
         with (
@@ -128,6 +127,18 @@ class MattermostSummarizer:
             ) as client,
             tempfile.TemporaryDirectory() as tmpdir,
         ):
+            # Prefetch root thread before initializing the LLM.
+            fetch_executor = FetchThreadExecutor(client)
+            fetch_obs = fetch_executor(FetchThreadAction(post_id=post_id))
+            if fetch_obs.error:
+                raise AgentStuckError(f"Failed to fetch root thread: {fetch_obs.error}")
+
+            root_thread_length = int(fetch_obs.total_replies) + 1
+            thread_text = "\n".join(item.text for item in fetch_obs.to_llm_content)
+            message = (
+                f"Summarize this Mattermost thread. The post ID is: {post_id}\n\n{thread_text}\n\n{level_addendum}"
+            )
+
             register_subagents(client)
 
             critic = None
@@ -151,6 +162,7 @@ class MattermostSummarizer:
             )
 
             tracker = ReferenceTracker(max_depth=effective_depth)
+            tracker.mark_followed(permalink_url, 0)
 
             agent = build_orchestrator_agent(
                 llm_model=self.config.llm_model,
@@ -239,7 +251,7 @@ class MattermostSummarizer:
 
                 thread_length = 1
                 if hasattr(finish_action, "tldr"):
-                    thread_length = _estimate_thread_length(conversation)
+                    thread_length = root_thread_length
 
                 metadata = SummaryMeta(
                     thread_length=thread_length,
@@ -319,26 +331,6 @@ def _extract_finish_action(conversation: LocalConversation) -> SummarizerFinishA
                                 return prev_action
 
     return None
-
-
-def _estimate_thread_length(conversation: LocalConversation) -> int:
-    """Estimate the number of posts in the thread from conversation events."""
-    fetch_count = 0
-
-    if hasattr(conversation, "state") and conversation.state:
-        events = getattr(conversation.state, "events", [])
-        for event in events:
-            if hasattr(event, "action") and event.action is not None:
-                action = event.action
-                if hasattr(action, "post_id"):
-                    fetch_count += 1
-
-            if hasattr(event, "observation") and event.observation is not None:
-                obs = event.observation
-                if hasattr(obs, "total_replies"):
-                    return int(obs.total_replies) + 1
-
-    return fetch_count + 1
 
 
 # _extract_last_delegate_observation has been removed — no longer used after the
