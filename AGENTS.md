@@ -5,7 +5,7 @@ This document defines baseline expectations for all development work in this pro
 ## Base Language
 
 - **Python 3** is the base language for this project
-- Use `uv run python` to run Python code (e.g., `uv run python script.py`)
+- Use `uv run python` to run Python code (e.g., `uv run --env-file=.env python script.py`)
 
 ## Package Management
 
@@ -15,7 +15,7 @@ This document defines baseline expectations for all development work in this pro
   - `uv remove <package>` - Remove dependencies
   - `uv sync` - Sync dependencies with lock file
   - `uv lock` - Update lock file
-  - `uv run <command>` - Run commands in project environment
+  - `uv run --env-file=.env <command>` - Run commands in project environment
 
 ## Code Quality Tools
 

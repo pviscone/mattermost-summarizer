@@ -13,9 +13,6 @@ from pathlib import Path
 logging.getLogger("litellm").setLevel(logging.ERROR)
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:5000"
-os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = "x-mlflow-experiment-id=0"  # Replace "123" with your MLflow experiment ID
-os.environ["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] = "http/protobuf"
 
 # Patch OTel context propagation into DelegateExecutor threads so that
 # sub-agent spans nest correctly under their parent DelegateAction span.
