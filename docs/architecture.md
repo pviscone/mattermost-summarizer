@@ -2,94 +2,73 @@
 
 ---
 
-## Architecture Evolution
+## Overall Request Flow
 
 ```
- v1 (current)                      v2 (multi-agent)
-┌──────────────────┐    ┌──────────────────────────────────────┐
-│  Single Agent    │    │  Orchestrator + Sub-agents           │
-│                  │    │                                      │
-│  All 7 tools     │    │  Orchestrator: DelegateTool + finish │
-│  in one agent    │    │  Sub-agents: domain tools only       │
-│                  │    │                                      │
-│  Sequential      │ ──► │  Parallel fetching via delegation  │
-│  No recursion    │    │  Recursive reference following      │
-│  No quality gate │    │  LLM-as-critic quality gate          │
-│  Prompt in user  │    │  System prompt via AgentContext      │
-│  message         │    │                                      │
-└──────────────────┘    └──────────────────────────────────────┘
-```
-
----
-
-## v2: Overall Request Flow
-
-```
-┌──────────────┐
-│  summarize.py│  CLI entry point
-│  main()      │
-└──────┬───────┘
-       │ summarize(url)
-       ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  MattermostSummarizer.summarize()  [summarizer.py]                  │
-│                                                                      │
-│  1. parse_permalink(url)  ──► post_id                               │
-│  2. MattermostClient(base_url, token)                               │
-│  3. load_config() ──► max_reference_depth, critic_*, level         │
-│  4. register_subagents(client, github_token) ──► 4 agent types      │
-│  5. build_orchestrator_agent(llm, level, critic) ──► Agent          │
-│  6. LocalConversation(agent, workspace, visualizer)                  │
-│  7. conversation.send_message("Summarize thread {url}")             │
-│  8. conversation.run()  ◄──── blocking agent loop                   │
-│  9. _extract_finish_action(conversation) ──► SummaryResult          │
-└──────────────────────────────────────────────────────────────────────┘
+summarize.py
+    │
+    ▼ main()
+┌──────────────────────────────────────────────────────────────────┐
+│  MattermostSummarizer.summarize()  [summarizer.py]              │
+│                                                                  │
+│  1. parse_permalink(url)  ──► post_id                           │
+│  2. MattermostClient(base_url, token)                           │
+│  3. load_config() ──► max_reference_depth, critic_*, level     │
+│  4. Prefetch root thread via FetchThreadExecutor                │
+│  5. register_subagents(client) ──► 4 agent types + delegate    │
+│  6. build_orchestrator_agent(llm, level, critic, tracker)      │
+│  7. LocalConversation(agent, workspace, visualizer)            │
+│  8. conversation.send_message(thread_text + addendum)          │
+│  9. Loop: conversation.run() up to 20 iterations                │
+│  10. _extract_finish_action(conversation) ──► SummaryResult    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## v2: Multi-Agent Architecture
+## Multi-Agent Architecture
+
+The system uses a single **Orchestrator Agent** that delegates reference fetching to **specialized sub-agents** transparently via the `fetch_reference` tool.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         ORCHESTRATOR AGENT                              │
 │                                                                         │
-│  System prompt: AgentContext.system_message_suffix                      │
-│  Tools: DelegateTool, finish (level-specific)                          │
-│  Critic: SummarizationCritic (iterative refinement)                    │
+│  System prompt: AgentContext.system_message_suffix (ORCHESTRATOR_PROMPT)│
+│  Tools:                                                                 │
+│    • fetch_reference  ──► FetchReferenceExecutor (spawns sub-agents)   │
+│    • finish           ──► level-specific finish tool                   │
+│  Critic: SummarizationCritic (iterative refinement, optional)          │
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │  Turn 1: Parse input, delegate root thread                       │ │
-│  │                                                                   │ │
-│  │  spawn ["thread_fetcher"]                                         │ │
-│  │  delegate {"thread_fetcher": "Fetch thread abc123"}               │ │
+│  │  Turn 1: Read prefetched root thread text                        │ │
+│  │         (injected in initial user message)                       │ │
+│  │         Call fetch_reference(url=<permalink>)                    │ │
+│  │         → FetchReferenceExecutor spawns thread_fetcher           │ │
+│  │         → Returns thread content + "References found:" block     │ │
 │  └───────────────────────────────────────────────────────────────────┘ │
 │                          │                                              │
-│                          ▼ consolidated text result                     │
+│                          ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │  Turn 2: LLM scans fetched text, identifies references           │ │
+│  │  Turn 2: LLM sees references in the result block                 │ │
 │  │                                                                   │ │
 │  │  Found:                                                           │ │
 │  │    • bugs.launchpad.net/12345                                     │ │
 │  │    • github.com/canonical/mattermost/pull/789                     │ │
 │  │    • chat.canonical.com/canonical/pl/xyz789                       │ │
-│  │    • file_id: abc (attachment)                                    │ │
 │  │                                                                   │ │
-│  │  spawn ["bug_researcher", "github_researcher",                    │ │
-│  │         "thread_fetcher", "file_fetcher"]                         │ │
-│  │  delegate {                    ← ALL FOUR RUN IN PARALLEL         │ │
-│  │    "bug_researcher":    "Fetch Launchpad bug #12345",             │ │
-│  │    "github_researcher": "Fetch github.com/.../pull/789",         │ │
-│  │    "thread_fetcher":    "Fetch thread xyz789",                    │ │
-│  │    "file_fetcher":      "Fetch file abc from thread abc123",      │ │
-│  │  }                                                                │ │
+│  │  Calls fetch_reference on each relevant URL                      │ │
+│  │  → FetchReferenceExecutor spawns appropriate sub-agents          │ │
+│  │  → bug_researcher, github_researcher, thread_fetcher            │ │
+│  │  → each runs in parallel (tool_concurrency_limit=4)             │ │
 │  └───────────────────────────────────────────────────────────────────┘ │
 │                          │                                              │
 │                          ▼ consolidated text results                     │
 │  ┌───────────────────────────────────────────────────────────────────┐ │
 │  │  Turn 3: depth=2, thread xyz789 references another thread        │ │
 │  │                                                                   │ │
-│  │  delegate {"thread_fetcher": "Fetch thread def456"}               │ │
+│  │  Call fetch_reference(url=xyz789) — already pending at depth 2   │ │
+│  │  → thread_fetcher fetches, finds no new refs or depth limit     │ │
 │  └───────────────────────────────────────────────────────────────────┘ │
 │                          │                                              │
 │                          ▼                                              │
@@ -99,30 +78,33 @@
 │                          │                                              │
 │                          ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │  CRITIC EVALUATION                                               │ │
+│  │  CRITIC EVALUATION (if enabled)                                  │ │
 │  │                                                                   │ │
 │  │  LLM reads: [original thread] + [fetched context] + [summary]   │ │
-│  │                                                                   │ │
 │  │  Score: 0.55 — below threshold (0.7)                             │ │
-│  │  Feedback: "TL;DR misses key decision. Narrative too thin."     │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                          │                                              │
-│                          ▼ feedback injected as new user message        │
-│  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │  Turn 5: Agent revises summary → calls finish again             │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                          │                                              │
-│                          ▼                                              │
-│  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │  CRITIC EVALUATION                                               │ │
+│  │  → feedback injected as new user message                         │ │
+│  │  → agent revises → calls finish again                           │ │
 │  │  Score: 0.85 — above threshold ✓                                │ │
 │  └───────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Orchestrator Tools
+
+The orchestrator sees only two tools:
+
+| Tool | Action | Purpose |
+|------|--------|---------|
+| `fetch_reference` | `FetchReferenceAction(url)` | Fetch a URL transparently — handles classification, depth checks, cycle prevention, and sub-agent delegation |
+| `finish` | `SummarizerFinishActionBase` | Submit the final structured summary (fields vary by level) |
+
+`fetch_reference` is the key abstraction: the orchestrator never directly calls `delegate` or knows about sub-agents.
+
 ---
 
-## v2: Sub-Agent Types
+## Sub-Agent Types
+
+Sub-agents are registered via the OpenHands SDK's `register_agent()` and spawned on-demand by `FetchReferenceExecutor` via `DelegateExecutor`.
 
 ```
 ┌────────────────────────┐  ┌────────────────────────┐
@@ -133,17 +115,12 @@
 │   • GetUser            │  │                        │
 │   • FetchChannel       │  │   System prompt:        │
 │                        │  │   "You are a bug        │
-│   System prompt:        │  │   researcher. Fetch     │
-│   "You are a thread    │  │   Launchpad bugs and     │
-│   researcher. Fetch    │  │   summarize findings."  │
-│   Mattermost threads   │  │                        │
-│   and extract key      │  │   Returns: bug title,   │
-│   information including │  │   status, description,  │
-│   any URLs found."     │  │   comments, impact       │
-│                        │  │                        │
-│   Returns: thread      │  │                        │
-│   content + extracted  │  │                        │
-│   URLs for next round  │  │                        │
+│   System prompt:        │  │   researcher..."        │
+│   "You are a thread    │  │                        │
+│   researcher..."       │  │   Returns: bug title,   │
+│                        │  │   status, description,  │
+│   Returns: thread      │  │   comments, impact       │
+│   content + URLs       │  │                        │
 └────────────────────────┘  └────────────────────────┘
 
 ┌────────────────────────┐  ┌────────────────────────┐
@@ -154,199 +131,214 @@
 │                        │  │                        │
 │   System prompt:        │  │   System prompt:        │
 │   "You are a GitHub    │  │   "You are a file       │
-│   researcher. Fetch     │  │   researcher. Fetch     │
-│   GitHub issues/PRs     │  │   Mattermost files and  │
-│   and summarize         │  │   report contents."     │
-│   findings."            │  │                        │
-│                        │  │   Returns: file content │
-│   Returns: issue/PR    │  │   or "not readable"    │
-│   title, body, state,  │  │   signal for binary     │
+│   researcher..."        │  │   researcher..."        │
+│                        │  │                        │
+│   Returns: issue/PR    │  │   Returns: file content │
+│   title, body, state,  │  │   or "not readable"    │
 │   comments, reviews    │  │                        │
 └────────────────────────┘  └────────────────────────┘
 ```
 
-### Sub-Agent Registration Pattern
-
-Each sub-agent is registered via the SDK's `register_agent()` with a factory function:
+### Sub-Agent Registration
 
 ```python
-def create_thread_fetcher(llm: LLM) -> Agent:
-    return Agent(
-        llm=llm,
-        tools=[
-            Tool(name="fetch_thread", params={}),
-            Tool(name="get_user", params={}),
-            Tool(name="fetch_channel", params={}),
-        ],
-        agent_context=AgentContext(
-            system_message_suffix=(
-                "You are a thread researcher. Fetch Mattermost threads "
-                "and extract key information including any URLs or "
-                "references found in the thread content."
-            ),
-        ),
-    )
+# In subagents/__init__.py
 
-register_agent(
-    name="thread_fetcher",
-    factory_func=create_thread_fetcher,
-    description="Fetches Mattermost threads and extracts key information and references.",
-)
+def register_subagents(client: MattermostClient | None = None) -> None:
+    register_delegate_tool()  # registers the SDK's delegate tool
+
+    register_agent("thread_fetcher",   lambda llm: create_thread_fetcher(llm, client),   "Fetches threads...")
+    register_agent("bug_researcher",   lambda llm: create_bug_researcher(llm, client),   "Fetches LP bugs...")
+    register_agent("github_researcher",lambda llm: create_github_researcher(llm, client),"Fetches GitHub...")
+    register_agent("file_fetcher",     lambda llm: create_file_fetcher(llm, client),     "Fetches files...")
 ```
 
-Sub-agents use the SDK's built-in `FinishAction` to return formatted text to the orchestrator.
+Each sub-agent is a full `Agent` instance with its own system prompt (via `AgentContext`) and specialty tools. They use the SDK's built-in `FinishAction` to return formatted text back to the orchestrator.
 
 ---
 
-## v2: Recursive Reference Following
+## FetchReference Tool: The Delegation Abstraction
+
+```python
+# subagents/fetch_reference_tool.py
+
+class FetchReferenceExecutor:
+    """Single entrypoint for the orchestrator to fetch any reference URL."""
+
+    def __call__(self, action: FetchReferenceAction, conversation=None):
+        1. classify_url(action.url) → ReferenceType + agent_type
+        2. Check tracker: already followed? → cycle error
+        3. Check tracker: depth exceeded? → depth error
+        4. Spawn sub-agent via DelegateExecutor:
+              spawn  → DelegateAction(command="spawn", ids=[agent_id], agent_types=[agent_type])
+              delegate → DelegateAction(command="delegate", tasks={agent_id: "Fetch and summarize: {url}"})
+        5. Receive sub-agent result text
+        6. Mark URL as followed in tracker
+        7. Scan result text for new URLs via classify_urls_in_text()
+        8. For each new followable URL:
+              tracker.register_pending(url, child_depth)
+        9. Append "References found in result:" block to observation
+        10. Return FetchReferenceObservation(result=full_text)
+```
+
+The orchestrator LLM only sees:
+- The fetched content
+- A "References found:" section listing URLs with one-sentence descriptions
+- Depth status (`Depth: 1/3` etc.)
+
+This removes the need for the orchestrator to manage cycle prevention or depth tracking itself.
+
+---
+
+## Recursive Reference Following
 
 ```
-Depth 0 (user input)
-  │
-  ▼
-Depth 1: orchestrator delegates thread_fetcher for root thread
-  │
-  │  thread contains: LP bug URL, GitHub PR URL, Mattermost permalink
-  ▼
-Depth 2: orchestrator delegates bug_researcher, github_researcher, thread_fetcher
-  │        (all three run in parallel)
-  │
-  │  fetched thread (from permalink) contains: another Mattermost permalink
-  ▼
-Depth 3: orchestrator delegates thread_fetcher for the new thread
-  │
-  │  fetched thread contains: no new references (or depth = max_reference_depth)
-  ▼
-Stop: synthesizing all gathered context → finish
+Depth 0: User provides permalink
+    │
+    ▼
+Depth 1: orchestrator calls fetch_reference(permalink_url)
+    │      → thread_fetcher returns root thread
+    │      → Finds: LP bug, GitHub PR, Mattermost permalink
+    ▼
+Depth 2: orchestrator calls fetch_reference on each relevant URL
+    │      → bug_researcher, github_researcher, thread_fetcher (parallel)
+    │      → Each result scanned for new references
+    │      → New URLs registered at pending depth=2
+    ▼
+Depth 3: orchestrator calls fetch_reference on new thread
+    │      → thread_fetcher returns, no new refs or max_depth reached
+    ▼
+Stop: synthesize and finish
+```
 
+### Cycle Prevention
 
-Cycle prevention:
-  ┌──────────────────────────────────────────────────┐
-  │  followed_urls: set[str] = set()                  │
-  │                                                  │
-  │  Each time orchestrator delegates a sub-agent    │
-  │  for a URL, that URL is added to followed_urls.  │
-  │  Before delegating, check: URL in followed_urls? │
-  │  → skip (already fetched)                        │
-  └──────────────────────────────────────────────────┘
+Handled by `ReferenceTracker` (in `tools/reference_tracker.py`):
 
+```python
+@dataclass
+class ReferenceTracker:
+    followed_urls: dict[str, int]   # url → depth at which it was fetched
+    pending_urls:  dict[str, int]   # url → depth (pre-registered before seen by LLM)
+    max_depth: int = 3
 
-URL classification routing:
-  ┌────────────────────────────────────────────────────────┐
-  │  URL pattern                         │ Sub-agent       │
-  │  ────────────────────────────────────│─────────────    │
-  │  chat.{server}/{team}/pl/{post_id}   │ thread_fetcher  │
-  │  bugs.launchpad.net/.../+bug/{id}   │ bug_researcher  │
-  │  github.com/{o}/{r}/issues/{id}      │ github_researcher│
-  │  github.com/{o}/{r}/pull/{id}        │ github_researcher│
-  │  Mattermost file IDs                 │ file_fetcher     │
-  └────────────────────────────────────────────────────────┘
+    def has_been_followed(self, url) -> bool:
+        return url in self.followed_urls
+
+    def mark_followed(self, url, depth):
+        # called after successful delegation
+
+    def register_pending(self, url, depth):
+        # called when a URL is discovered in sub-agent output
+```
+
+Depth is **per-URL**, not a global counter. Siblings discovered in the same thread all share the same depth level, so `max_depth=3` allows e.g. 6 sibling URLs at depth 1 each surfacing sub-references at depth 2.
+
+### URL Classification
+
+| URL pattern | Sub-agent | ReferenceType |
+|-------------|-----------|---------------|
+| `chat.{server}/{team}/pl/{post_id}` | `thread_fetcher` | `MATTERMOST_THREAD` |
+| `bugs.launchpad.net/.../+bug/{id}` | `bug_researcher` | `LAUNCHPAD_BUG` |
+| `github.com/{o}/{r}/issues/{id}` | `github_researcher` | `GITHUB_ISSUE` |
+| `github.com/{o}/{r}/pull/{id}` | `github_researcher` | `GITHUB_PR` |
+| `files.chat.{server}/...` or `/files/{id}` | `file_fetcher` | `MATTERMOST_FILE` |
+
+---
+
+## Summarization Levels
+
+Three levels with different output fields and depth defaults:
+
+| Level | Default Depth | TL;DR | Key Findings | Narrative | Action Items | Participants | Open Questions | Context Sources |
+|-------|---------------|-------|--------------|-----------|--------------|--------------|----------------|-----------------|
+| `brief` | 0 | 2-3 bullets | — | — | optional | — | — | — |
+| `normal` | 1 | 3-5 bullets | ✓ | ✓ | ✓ | ✓ | — | — |
+| `detailed` | 3 | 3-5 bullets | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+The orchestrator receives a level-specific `addendum` appended to the user message (e.g. "Level: DETAILED (comprehensive) — produce a thorough summary with all fields...").
+
+Each level has its own `FinishAction` subclass with typed fields and a `FinishTool` subclass registered as the SDK `finish` tool:
+
+```python
+# levels/normal.py
+class NormalFinishAction(SummarizerFinishActionBase):
+    tldr: str
+    key_findings: list[str]
+    narrative: str
+    action_items: list[str]
+    participants: list[str]
+
+class NormalFinishTool(SummarizerFinishToolBase):
+    @classmethod
+    def create(cls): ...  # registers with SDK
 ```
 
 ---
 
-## v2: LLM-as-Critic with Iterative Refinement
+## LLM-as-Critic with Iterative Refinement
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
 │  SummarizationCritic(CriticBase)                                │
 │                                                                  │
-│  iterative_refinement:                                           │
-│    success_threshold = 0.7  (configurable)                      │
-│    max_iterations = 2       (configurable)                      │
+│  Configurable thresholds:                                        │
+│    success_threshold = 0.7                                       │
+│    max_iterations = 2                                            │
 │                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  evaluate(events, git_patch=None) → CriticResult           │ │
-│  │                                                            │ │
-│  │  1. _extract_gathered_context(events)                      │ │
-│  │     → original thread + all delegation results             │ │
-│  │                                                            │ │
-│  │  2. _extract_finish_action(events)                         │ │
-│  │     → the produced summary (TL;DR, narrative, etc.)        │ │
-│  │                                                            │ │
-│  │  3. _build_rubric(level)                                   │ │
-│  │     → level-specific evaluation prompt                     │ │
-│  │                                                            │ │
-│  │  4. _call_critic_llm(context, summary, rubric)             │ │
-│  │     → LLM evaluates: score (0-1) + feedback                │ │
-│  │                                                            │ │
-│  │  5. return CriticResult(score, message)                    │ │
-│  └────────────────────────────────────────────────────────────┘ │
+│  evaluate(events) → CriticResult(score, message)                │
+│    1. _extract_gathered_context(events)                         │
+│    2. _extract_finish_action(events)                            │
+│    3. _build_rubric(level) → brief/normal/detailed prompt       │
+│    4. _call_critic_llm(context, summary, rubric)                │
+│       → LLM returns JSON: {"score": 0.85, "feedback": "..."}    │
+│    5. return CriticResult(score, message)                       │
 │                                                                  │
-│  Level-specific rubrics:                                         │
-│  ┌──────────────┬──────────────────────────────────────────┐    │
-│  │ Brief        │ Terseness, key points, no fluff         │    │
-│  │ Normal       │ Completeness, accuracy, action items    │    │
-│  │ Detailed     │ + open questions, sources, nuance       │    │
-│  └──────────────┴──────────────────────────────────────────┘    │
-│                                                                  │
-│  Iterative refinement loop:                                      │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  iteration 1: agent calls finish → critic score 0.55       │ │
-│  │    → below 0.7 threshold → feedback injected               │ │
-│  │    → "TL;DR misses key decision. Narrative too thin."      │ │
-│  │                                                            │ │
-│  │  iteration 2: agent revises → calls finish → score 0.85   │ │
-│  │    → above 0.7 threshold ✓ → summary accepted              │ │
-│  │                                                            │ │
-│  │  (if max_iterations reached without passing threshold,     │ │
-│  │   return best-effort summary)                              │ │
-│  └────────────────────────────────────────────────────────────┘ │
+│  When score < threshold: feedback injected as user message       │
+│  → agent loop continues, agent revises summary                  │
+│  When score ≥ threshold or max_iterations reached: accept       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
+The critic is attached to the orchestrator `Agent` via the `critic=` parameter. The OpenHands SDK handles the iterative refinement loop automatically.
+
 ---
 
-## v2: System Prompt via AgentContext
+## System Prompt via AgentContext
+
+The orchestrator uses `AgentContext(system_message_suffix=ORCHESTRATOR_PROMPT)` so the system prompt is sent as a proper system message (cached by providers like Anthropic/Gemini), not embedded in the first user message.
 
 ```
 BEFORE (v1 — system prompt in user message):
-═════════════════════════════════════════════════
-
-  Turn 1 user message:
-    "Summarize this thread: https://...
-     The post ID is: abc123
-
-     You are a Mattermost conversation summarizer.
-     Your job is to read conversation threads and
-     produce structured summaries...
-     [full 50-line system prompt repeated]"
-
-  Turn 2 user message:
-    (agent calls FetchThread, gets observation)
-    [system prompt NOT repeated here — but it was
-     already in the first user message, so it's
-     still in context as a user message]
-
-  Problem: system prompt sent in user turn, no
-  provider-side caching benefit.
-
+  Turn 1 user message: "Summarize... [full 50-line system prompt repeated]"
+  Problem: no provider-side caching benefit
 
 AFTER (v2 — system prompt via AgentContext):
-═════════════════════════════════════════════════
-
-  System message (sent once, cached by provider):
-    "You are a Mattermost conversation summarizer.
-     Your job is to read conversation threads and
-     produce structured summaries..."
-
-  Turn 1 user message:
-    "Summarize this Mattermost thread:
-     https://chat.example.com/team/pl/abc123
-     The post ID is: abc123"
-
-  Turn 2 user message:
-    (delegation results returned as tool observation)
-
-  Benefit: system message is cached (Anthropic,
-  Gemini), user messages are small, clean
-  separation of identity (system) vs task (user).
+  System message: "You are a Mattermost conversation summarizer..."
+  Turn 1 user message: "Summarize this thread: {url}"
+  Benefit: system message cached, user messages small and clean
 ```
 
 ---
 
-## v2: Full Sequence: URL → SummaryResult
+## Thread Pre-fetching
+
+The root thread is fetched **before** the conversation starts, not via a tool call:
+
+```python
+# summarizer.py summarize()
+fetch_executor = FetchThreadExecutor(client)
+fetch_obs = fetch_executor(FetchThreadAction(post_id=post_id))
+thread_text = "\n".join(item.text for item in fetch_obs.to_llm_content)
+message = f"Summarize this Mattermost thread...\n\n{thread_text}\n\n{level_addendum}"
+conversation.send_message(message)
+```
+
+This ensures the LLM always has the full thread content in its first turn and avoids an extra round-trip.
+
+---
+
+## Full Sequence: URL → SummaryResult
 
 ```
 summarize(url)
@@ -354,64 +346,68 @@ summarize(url)
   ├─ parse_permalink(url) → post_id
   ├─ MattermostClient(base_url, token)
   │
-  ├─ register_subagents(client, github_token)
-  │    register_agent("thread_fetcher", create_thread_fetcher)
-  │    register_agent("bug_researcher", create_bug_researcher)
-  │    register_agent("github_researcher", create_github_researcher)
-  │    register_agent("file_fetcher", create_file_fetcher)
+  ├─ Prefetch root thread:
+  │    FetchThreadExecutor(client)(FetchThreadAction(post_id=post_id))
+  │    → thread_text (root post + replies with resolved usernames)
   │
-  ├─ build_orchestrator_agent(llm, level, critic)
-  │    Agent(llm=LLM(...),
-  │           tools=[Tool(name=DelegateTool.name),
-  │                  Tool(name="finish", params={...})],
-  │           agent_context=AgentContext(
-  │               system_message_suffix=SYSTEM_PROMPT),
-  │           critic=SummarizationCritic(llm=..., level=...))
+  ├─ register_subagents(client)
+  │    register_delegate_tool()
+  │    register_agent("thread_fetcher", ...)
+  │    register_agent("bug_researcher", ...)
+  │    register_agent("github_researcher", ...)
+  │    register_agent("file_fetcher", ...)
+  │
+  ├─ build_orchestrator_agent(llm, level, critic, tracker)
+  │    Agent(
+  │      llm=LLM(...),
+  │      tools=[Tool(name="fetch_reference"), Tool(name="finish")],
+  │      agent_context=AgentContext(system_message_suffix=ORCHESTRATOR_PROMPT),
+  │      critic=SummarizationCritic(...) if enabled,
+  │      tool_concurrency_limit=4,
+  │    )
   │
   ├─ LocalConversation(agent, workspace=tmpdir, visualizer)
-  ├─ send_message("Summarize this Mattermost thread: {url}")
+  ├─ send_message("Summarize... post_id=abc\n\n[thread_text]\n\n[addendum]")
   │
-  └─ run()
+  └─ Loop up to 20 iterations:
+       conversation.run()
        │
        │  ┌─ Orchestrator Turn 1 ─────────────────────────┐
-       │  │  LLM → spawn + delegate thread_fetcher         │
-       │  │  thread_fetcher:                                │
-       │  │    fetch_thread(abc123) → thread text           │
-       │  │    get_user(uid1), get_user(uid2) → names       │
-       │  │    fetch_channel(ch1) → channel info             │
-       │  │    finish("Thread abc123: [content + URLs]")    │
-       │  │  → consolidated result back to orchestrator     │
+       │  │  LLM → fetch_reference(url=<permalink>)         │
+       │  │  FetchReferenceExecutor:                       │
+       │  │    classify_url() → thread_fetcher             │
+       │  │    spawn thread_fetcher sub-agent              │
+       │  │    delegate "Fetch and summarize: {url}"       │
+       │  │    → sub-agent fetches thread, returns text    │
+       │  │    → scan result for URLs, register pending    │
+       │  │    → append "References found:" block          │
+       │  │  → observation back to orchestrator            │
        │  └────────────────────────────────────────────────┘
        │
        │  ┌─ Orchestrator Turn 2 ─────────────────────────┐
-       │  │  LLM scans result, identifies:                 │
-       │  │    - bugs.launchpad.net/12345                  │
-       │  │    - github.com/o/r/pull/789                    │
-       │  │    - chat.example.com/team/pl/xyz789           │
-       │  │                                                │
-       │  │  spawn + delegate (PARALLEL):                  │
-       │  │    bug_researcher → "Fetch LP bug #12345"     │
-       │  │    github_researcher → "Fetch PR #789"         │
-       │  │    thread_fetcher → "Fetch thread xyz789"     │
-       │  │  → all three run in parallel, return results   │
+       │  │  LLM scans "References found:" block          │
+       │  │  Calls fetch_reference on relevant URLs        │
+       │  │  → bug_researcher, github_researcher, etc.    │
+       │  │  → all run in parallel (concurrency limit=4)  │
+       │  │  → each returns with its own refs block        │
        │  └────────────────────────────────────────────────┘
        │
-       │  ┌─ Orchestrator Turn 3 (depth=2) ──────────────┐
-       │  │  thread xyz789 references thread def456        │
-       │  │  delegate thread_fetcher → "Fetch def456"      │
+       │  ┌─ Orchestrator Turn 3+ (recursive depth) ─────┐
+       │  │  Continue following references until:          │
+       │  │    - no new references found                   │
+       │  │    - max_reference_depth reached               │
+       │  │    - all refs already followed (cycle)         │
        │  └────────────────────────────────────────────────┘
        │
-       │  ┌─ Orchestrator Turn 4 ─────────────────────────┐
+       │  ┌─ Final Turn ──────────────────────────────────┐
        │  │  LLM synthesizes all gathered context           │
-       │  │  finish(tldr=..., narrative=..., ...)            │
+       │  │  Calls finish(tldr=..., narrative=..., ...)    │
        │  └────────────────────────────────────────────────┘
        │
-       │  ┌─ Critic Evaluation ────────────────────────────┐
-       │  │  score=0.55, below threshold → revision       │
-       │  │  feedback injected as new user message          │
-       │  │                                                │
-       │  │  LLM revises → finish(improved summary)         │
-       │  │  score=0.85, above threshold ✓                  │
+       │  ┌─ Critic Evaluation ───────────────────────────┐
+       │  │  (if enabled, handled by SDK critic loop)     │
+       │  │  score < threshold → revision cycle           │
+       │  │  score ≥ threshold → accept and break         │
        │  └────────────────────────────────────────────────┘
        │
        └─ _extract_finish_action(conversation)
@@ -423,31 +419,17 @@ summarize(url)
 
 ---
 
-## v2: Tool Distribution (Agent vs Sub-agent)
+## Tool Distribution (Agent vs Sub-agent)
 
 ```
-v1: ALL tools in one agent
-═══════════════════════════
-
-  ┌───────────────────────────────────────────┐
-  │            Single Agent                    │
-  │                                           │
-  │  FetchThread, GetUser, FetchChannel,      │
-  │  FetchFile, FetchLaunchpadBug,            │
-  │  FetchGitHubIssue, finish                 │
-  └───────────────────────────────────────────┘
-
-
-v2: Tools distributed by specialty
-═══════════════════════════════════
-
+Orchestrator Agent:
   ┌─────────────────────┐
-  │   Orchestrator       │
-  │   DelegateTool       │
-  │   finish (level)     │
-  └────────┬────────────┘
-           │ delegates
+  │   fetch_reference   │  ← transparently delegates to sub-agents
+  │   finish (level)    │  ← submits structured summary
+  └─────────────────────┘
            │
+           │ spawns via DelegateExecutor (internal)
+           ▼
   ┌────────┼──────────────────────────────┐
   │        │                              │
   ▼        ▼              ▼               ▼
@@ -465,24 +447,29 @@ v2: Tools distributed by specialty
 
 ---
 
-## v2: Class Hierarchy (new components)
+## Class Hierarchy
 
 ```
 mattermost_summarizer
+├── __init__.py
 ├── agent.py
-│   ├── build_orchestrator_agent()    ← NEW: builds orchestrator with
-│   │                                    DelegateTool, finish, AgentContext
-│   ├── build_summarizer_agent()      ← existing (kept for rollback)
-│   └── register_subagents()          ← NEW: registers 4 sub-agent types
+│   ├── build_orchestrator_agent()    ← orchestrator with fetch_reference + finish
+│   ├── build_summarizer_agent()      ← legacy single-agent (kept for rollback)
+│   └── build_summarizer_agent_with_github()  ← legacy
 │
-├── subagents/                         ← NEW package
-│   ├── __init__.py
-│   ├── thread_fetcher.py              ← NEW: create_thread_fetcher()
-│   ├── bug_researcher.py             ← NEW: create_bug_researcher()
-│   ├── github_researcher.py          ← NEW: create_github_researcher()
-│   └── file_fetcher.py               ← NEW: create_file_fetcher()
+├── summarizer.py
+│   └── MattermostSummarizer.summarize()  ← main orchestrator loop
 │
-├── critic.py                         ← NEW module
+├── client.py
+│   └── MattermostClient              ← httpx-based sync API client
+│
+├── config.py
+│   └── MattermostSummarizerConfig    ← pydantic-settings (TOML + env vars)
+│       ├── max_reference_depth
+│       ├── critic_enabled, critic_threshold, critic_max_iterations
+│       └── max_sub_agents
+│
+├── critic.py
 │   └── SummarizationCritic(CriticBase)
 │        ├── evaluate()
 │        ├── _extract_gathered_context()
@@ -490,29 +477,56 @@ mattermost_summarizer
 │        ├── _build_rubric()
 │        └── _call_critic_llm()
 │
-├── config.py
-│   └── MattermostSummarizerConfig
-│        ├── max_reference_depth: int = 3    ← NEW
-│        ├── critic_enabled: bool = True      ← NEW
-│        ├── critic_threshold: float = 0.7    ← NEW
-│        └── critic_max_iterations: int = 2   ← NEW
+├── models.py
+│   ├── PostData, PostThread, Channel, UserProfile, ReactionData
+│   └── Re-exports from levels/: SummaryResult, SummaryMeta, etc.
 │
-├── summarizer.py
-│   └── MattermostSummarizer.summarize()  ← MODIFIED: orchestrator loop
+├── utils.py
+│   ├── parse_permalink()
+│   ├── setup_logging() / cleanup_external_loggers()
 │
-└── tools/                               ← UNCHANGED (tool code stays)
-    ├── fetch_thread/impl.py
-    ├── fetch_channel/impl.py
-    ├── get_user/impl.py
-    ├── fetch_file/impl.py
-    ├── fetch_launchpad_bug/impl.py
-    ├── fetch_github_issue/impl.py
-    └── finish/definition.py
+├── visualizer.py
+│   └── FileConversationVisualizer    ← writes agent-trace.log
+│
+├── tracing_patch.py
+│   └── install()                     ← OTel context propagation for sub-agents
+│
+├── exceptions.py                     ← PermalinkError, AgentStuckError, etc.
+│
+├── levels/                           ← level-specific finish actions/tools/results
+│   ├── __init__.py
+│   ├── base.py                       ← SummaryMeta, SummaryResultBase,
+│   │                                    SummarizerFinishActionBase, SummarizerFinishToolBase
+│   ├── brief.py                      ← BriefFinishAction, BriefSummaryResult
+│   ├── normal.py                     ← NormalFinishAction, NormalSummaryResult
+│   └── detailed.py                   ← DetailedFinishAction, DetailedSummaryResult
+│
+├── subagents/                        ← sub-agent factories + delegation tools
+│   ├── __init__.py                   ← create_*() factories + register_subagents()
+│   ├── delegate_tool.py              ← DelegateTool wrapper for SDK delegate
+│   ├── fetch_reference_tool.py       ← FetchReferenceTool/Executor (orchestrator's single tool)
+│   └── reference_tracking_tool.py    ← ReferenceTrackingTool (legacy/alt implementation)
+│
+└── tools/                            ← individual tool implementations
+    ├── __init__.py                   ← build_mattermost_tools(), build_summarizer_tools()
+    ├── reference_tracker.py          ← URL classification, ReferenceTracker, prompt building
+    ├── fetch_thread/
+    │   └── impl.py                   ← FetchThreadAction/Observation/Executor/Tool
+    ├── fetch_channel/
+    │   └── impl.py                   ← FetchChannelAction/Observation/Executor/Tool
+    ├── get_user/
+    │   └── impl.py                   ← GetUserAction/Observation/Executor/Tool
+    ├── fetch_file/
+    │   └── impl.py                   ← FetchFileAction/Observation/Executor/Tool
+    ├── fetch_launchpad_bug/
+    │   └── impl.py                   ← FetchLaunchpadBugAction/Observation/Executor/Tool
+    └── fetch_github_issue/
+        └── impl.py                   ← FetchGitHubIssueAction/Observation/Executor/Tool
 ```
 
 ---
 
-## v2: Configuration
+## Configuration
 
 ```toml
 [mattermost]
@@ -527,58 +541,92 @@ base_url = "..."
 [github]
 token = "ghp_..."
 
-[summarizer]                             ← NEW section
-default_level = "normal"                  ← from summarization-levels change
-max_reference_depth = 3                  ← NEW
-critic_enabled = true                     ← NEW
-critic_threshold = 0.7                    ← NEW
-critic_max_iterations = 2                ← NEW
+[summarizer]
+default_level = "normal"
+max_reference_depth = 3
+critic_enabled = true
+critic_threshold = 0.7
+critic_max_iterations = 2
+max_sub_agents = 500
 ```
 
-Environment variable overrides:
+Environment variables use `MM_` prefix with `_` as nested delimiter:
 
 | TOML field | Env var |
 |-----------|---------|
-| `max_reference_depth` | `MM_SUMMARIZER_MAX_REFERENCE_DEPTH` |
+| `mattermost_url` | `MM_MATTERMOST_URL` |
+| `llm_model` | `MM_LLM_MODEL` |
+| `github_token` | `MM_GITHUB_TOKEN` |
+| `summarizer_default_level` | `MM_SUMMARIZER_DEFAULT_LEVEL` |
+| `max_reference_depth` | `MM_MAX_REFERENCE_DEPTH` |
 | `critic_enabled` | `MM_CRITIC_ENABLED` |
 | `critic_threshold` | `MM_CRITIC_THRESHOLD` |
 | `critic_max_iterations` | `MM_CRITIC_MAX_ITERATIONS` |
+| `max_sub_agents` | `MM_MAX_SUB_AGENTS` |
 
 ---
 
-## SDK Internals: Agent Loop (unchanged, for reference)
+## Observability & Tracing
+
+### MLflow Tracing
+
+An MLflow server is available at `http://127.0.0.1:5000` for tracing LLM calls.
+
+- **Experiment ID**: `0` — used for mattermost-summarizer runs
+- Traces are configured via environment variables in `summarize.py` (OTLP exporter with `http/protobuf` protocol)
+- View traces at `http://127.0.0.1:5000`
+
+### OTel Context Propagation
+
+`tracing_patch.py` monkey-patches `DelegateExecutor._delegate_tasks` and `LocalConversation._start_observability_span` to propagate OpenTelemetry trace context across thread boundaries. Without this, sub-agent spans would appear as siblings of the root conversation span instead of nesting under the `DelegateAction` span.
+
+```
+Parent thread (DelegateAction span active)
+    │
+    ├─ captures OTel Context
+    ├─ patches threading.Thread to forward context
+    │   ▼
+    │   Child thread (sub-agent conversation)
+    │       ├─ receives parent context via ContextVar
+    │       └─ Laminar.start_span("conversation", context=parent_ctx)
+    │           → sub-agent span is child of DelegateAction ✓
+```
+
+### Conversation Visualizer
+
+`FileConversationVisualizer` writes formatted agent trace output to `agent-trace.log` instead of stdout.
+
+---
+
+## SDK Internals: Agent Loop (for reference)
 
 ### Setup (lazy, one-time)
 
 ```
-LocalConversation.__init__()          local_conversation.py:96
+LocalConversation.__init__()
   └─ stores agent, workspace, visualizer — no I/O yet
 
 first run() or send_message() calls:
-LocalConversation._ensure_agent_ready()   local_conversation.py:592
+LocalConversation._ensure_agent_ready()
   ├─ _ensure_plugins_loaded()   loads MCP config, hooks, skills
   ├─ registers file-based agents
-  └─ agent.init_state(state, on_event)    agent.py:350
+  └─ agent.init_state(state, on_event)
        └─ emits SystemPromptEvent(system_prompt, tools, dynamic_context)
             → appended to state.events as event[0]
 ```
 
----
-
 ### send_message() — Inject the Task
 
 ```
-LocalConversation.send_message(text)      local_conversation.py:702
+LocalConversation.send_message(text)
   └─ emits MessageEvent(source="user", content=text)
        → appended to state.events
 ```
 
----
-
 ### run() — The Main Loop
 
 ```
-LocalConversation.run()                   local_conversation.py:768
+LocalConversation.run()
 
 ┌─────────────────────────────────────────────────────────────────┐
 │  while True:                                                    │
@@ -597,12 +645,10 @@ LocalConversation.run()                   local_conversation.py:768
 └─────────────────────────────────────────────────────────────────┘
 ```
 
----
-
 ### agent.step() — One Iteration
 
 ```
-Agent.step()                              agent.py:554
+Agent.step()
 
   ① pending actions?   unmatched ActionEvents → execute & return
 
@@ -624,23 +670,21 @@ Agent.step()                              agent.py:554
        make_llm_completion(llm, messages, tools=schemas)
        → calls LiteLLM → returns LLMResponse(message)
 
-  ⑤ classify_response(message)           response_dispatch.py:53
+  ⑤ classify_response(message)
        TOOL_CALLS     → has message.tool_calls
        CONTENT        → non-blank text content
        REASONING_ONLY → thinking blocks only
        EMPTY          → nothing
 ```
 
----
-
 ### Tool Call Dispatch (TOOL_CALLS path)
 
 ```
-_handle_tool_calls()                      response_dispatch.py:187
+_handle_tool_calls()
 
   for each tool_call in message.tool_calls:
 
-    _get_action_event()                   agent.py:971
+    _get_action_event()
       ├─ parse JSON arguments
       ├─ normalize tool name
       ├─ validate args against tool.action_type (Pydantic)
@@ -649,7 +693,7 @@ _handle_tool_calls()                      response_dispatch.py:187
 
     requires confirmation? → WAITING_FOR_CONFIRMATION, return
 
-  _execute_actions()                      agent.py:491
+  _execute_actions()
     └─ ParallelToolExecutor.execute_batch()
          ThreadPoolExecutor — runs all tool calls in parallel
          ┌───────────────────────────────────────────────────┐
@@ -659,59 +703,25 @@ _handle_tool_calls()                      response_dispatch.py:187
          │  → emit ObservationEvent  (or AgentErrorEvent)   │
          └───────────────────────────────────────────────────┘
     └─ batch.finalize()
-         if SummarizerFinishTool called → set status = FINISHED
+         if finish tool called → set status = FINISHED
 ```
 
----
+### Parallel Tool Execution
 
-### Critic Integration (v2 addition to the loop)
+`FetchReferenceTool` declares resources per-URL to allow concurrent fetching:
 
+```python
+class FetchReferenceTool(ToolDefinition[...]):
+    def declared_resources(self, action: FetchReferenceAction) -> DeclaredResources:
+        # Lock on the URL to prevent duplicate fetches, but allow
+        # different URLs to run concurrently.
+        return DeclaredResources(keys=(f"url:{action.url}",), declared=True)
 ```
-After agent.step() completes with a finish action:
-
-┌────────────────────────────────────────────────────────────────┐
-│  Critic Evaluation (if critic attached and finish detected)     │
-│                                                                │
-│  critic.evaluate(events, git_patch)                            │
-│    → CriticResult(score, message)                             │
-│                                                                │
-│  if critic.should_refine(result):                              │
-│    → inject feedback as new user message                       │
-│    → loop continues (agent revises)                           │
-│  else:                                                         │
-│    → summary accepted, conversation ends                        │
-│                                                                │
-│  max_iterations reached without passing?                       │
-│    → return best-effort summary (no more revisions)           │
-└────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### Event Callback Chain (every emitted event)
-
-```
-emit(event)
-  ├─ visualizer.on_event(event)
-  │    DelegationVisualizer → writes delegation trace
-  │    FileConversationVisualizer → writes to agent-trace.log
-  │
-  ├─ user_callbacks(event)         (optional user-supplied)
-  │
-  ├─ _default_callback(event)
-  │    state.events.append(event)
-  │    tracks last_user_message_id
-  │
-  └─ hook_processor(event)
-       runs session / stop / action hooks if configured
-```
-
----
 
 ### Stuck Detector
 
 ```
-StuckDetector.is_stuck()                  stuck_detector.py:62
+StuckDetector.is_stuck()                  stuck_detector.py
   scans last 20 events since last user message
   checks 4 patterns:
 
@@ -742,7 +752,11 @@ StuckDetector.is_stuck()                  stuck_detector.py:62
        ▼ parse_permalink()
   post_id = "abc123"
        │
-       ▼ LLM prompt: "Summarize... post_id=abc123" + SYSTEM_PROMPT
+       ▼ build_summarizer_agent() with ALL tools:
+       │    FetchThread, GetUser, FetchChannel,
+       │    FetchFile, FetchLaunchpadBug, FetchGitHubIssue, finish
+       │
+       ▼ LLM prompt: "Summarize... post_id=abc123"
        │
        │  LLM calls fetch_thread(post_id="abc123")
        ▼
