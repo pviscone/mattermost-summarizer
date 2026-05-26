@@ -11,6 +11,8 @@ from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.tool.tool import ToolAnnotations, ToolDefinition
 from pydantic import Field
 
+from mattermost_summarizer.ssrf import check_url_ssrf
+
 
 class FetchLaunchpadBugAction(Action):
     """Fetch a public Launchpad bug by URL or numeric ID."""
@@ -64,6 +66,10 @@ class FetchLaunchpadBugExecutor(ToolExecutor[FetchLaunchpadBugAction, FetchLaunc
     def __call__(
         self, action: FetchLaunchpadBugAction, conversation: object | None = None
     ) -> FetchLaunchpadBugObservation:
+        ssrf_result = check_url_ssrf(action.bug_url_or_id)
+        if not ssrf_result.is_safe:
+            return FetchLaunchpadBugObservation(error=f"URL is not accessible: {ssrf_result.reason}")
+
         bug_id = self._parse_bug_id(action.bug_url_or_id)
         if bug_id is None:
             return FetchLaunchpadBugObservation(error="Invalid bug URL or ID")

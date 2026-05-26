@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from urllib.parse import urlparse
 
+from mattermost_summarizer.ssrf import check_url_ssrf
+
 
 class ReferenceType(Enum):
     """Type of reference found in thread content."""
@@ -164,6 +166,15 @@ def classify_url(url: str) -> ReferenceType:
     Returns:
         ReferenceType enum value
     """
+    ssrf_result = check_url_ssrf(url)
+    if not ssrf_result.is_safe:
+        logging.getLogger(__name__).warning(
+            "SSRF check blocked URL: %s (%s)",
+            url,
+            ssrf_result.reason,
+        )
+        return ReferenceType.UNKNOWN
+
     parsed = urlparse(sanitize_url(url))
     netloc = parsed.netloc.lower()
     path = parsed.path.lower()

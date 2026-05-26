@@ -127,6 +127,14 @@ class MattermostSummarizer:
             ) as client,
             tempfile.TemporaryDirectory() as tmpdir,
         ):
+            from mattermost_summarizer.ssrf import set_ssrf_defaults
+
+            set_ssrf_defaults(
+                blocked_ips=self.config.ssrf_blocked_ips,
+                blocked_hostnames=self.config.ssrf_blocked_hostnames,
+                log_blocked=self.config.ssrf_log_blocked,
+            )
+
             # Prefetch root thread before initializing the LLM.
             fetch_executor = FetchThreadExecutor(client)
             fetch_obs = fetch_executor(FetchThreadAction(post_id=post_id))

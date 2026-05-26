@@ -12,6 +12,8 @@ from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.tool.tool import ToolAnnotations, ToolDefinition
 from pydantic import Field, SecretStr
 
+from mattermost_summarizer.ssrf import check_url_ssrf
+
 
 class FetchGitHubIssueAction(Action):
     """Fetch a GitHub issue or pull request by URL."""
@@ -111,6 +113,10 @@ class FetchGitHubIssueExecutor(ToolExecutor[FetchGitHubIssueAction, FetchGitHubI
     def __call__(
         self, action: FetchGitHubIssueAction, conversation: object | None = None
     ) -> FetchGitHubIssueObservation:
+        ssrf_result = check_url_ssrf(action.url)
+        if not ssrf_result.is_safe:
+            return FetchGitHubIssueObservation(error=f"URL is not accessible: {ssrf_result.reason}")
+
         parsed = self._parse_url(action.url)
         if parsed is None:
             return FetchGitHubIssueObservation(error="Invalid GitHub issue/PR URL")

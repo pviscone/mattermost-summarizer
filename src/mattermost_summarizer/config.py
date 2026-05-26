@@ -93,6 +93,23 @@ class MattermostSummarizerConfig(BaseSettings):
         default=500,
         description="Maximum number of sub-agents that can be spawned during reference following (default: 500)",
     )
+    ssrf_blocked_ips: list[str] | None = Field(
+        default=None,
+        description=(
+            "List of blocked IP CIDRs for SSRF protection (None = use defaults). Example: ['127.0.0.0/8', '10.0.0.0/8']"
+        ),
+    )
+    ssrf_blocked_hostnames: list[str] | None = Field(
+        default=None,
+        description=(
+            "List of blocked hostname patterns/TLDs for SSRF protection (None = use defaults). "
+            "Example: ['.local', '.internal']"
+        ),
+    )
+    ssrf_log_blocked: bool = Field(
+        default=True,
+        description="Whether to log blocked SSRF attempts (default: True)",
+    )
 
     @classmethod
     def from_config(cls, path: Path | str) -> "MattermostSummarizerConfig":
@@ -158,6 +175,15 @@ class MattermostSummarizerConfig(BaseSettings):
                 data["critic_max_iterations"] = int(summarizer["critic_max_iterations"])
             if "max_sub_agents" in summarizer:
                 data["max_sub_agents"] = int(summarizer["max_sub_agents"])
+
+        if "ssrf" in toml_data:
+            ssrf: dict[str, Any] = dict(toml_data["ssrf"])  # pyright: ignore[reportArgumentType]  # type: ignore[misc]
+            if "blocked_ips" in ssrf:
+                data["ssrf_blocked_ips"] = list(ssrf["blocked_ips"])
+            if "blocked_hostnames" in ssrf:
+                data["ssrf_blocked_hostnames"] = list(ssrf["blocked_hostnames"])
+            if "log_blocked" in ssrf:
+                data["ssrf_log_blocked"] = bool(ssrf["log_blocked"])
 
         return cls(**data)
 
