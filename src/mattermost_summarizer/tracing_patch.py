@@ -133,7 +133,7 @@ def _patch_local_conversation() -> None:
 
     original_start_span = LocalConversation._start_observability_span  # type: ignore[attr-defined]
 
-    def _patched_start_observability_span(self: Any, session_id: str) -> None:
+    def _patched_start_observability_span(self: Any, session_id: str, *args, **kwargs) -> None:
         parent_ctx = _parent_otel_context.get()
         if parent_ctx is None:
             # Not in a sub-agent thread — use normal behaviour.
