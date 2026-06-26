@@ -2,7 +2,13 @@
 
 import pytest
 
-from mattermost_summarizer.utils import PermalinkError, parse_channel_url, parse_permalink, parse_time_point
+from mattermost_summarizer.utils import (
+    PermalinkError,
+    parse_channel_url,
+    parse_message_url,
+    parse_permalink,
+    parse_time_point,
+)
 
 
 class TestParsePermalink:
@@ -18,6 +24,11 @@ class TestParsePermalink:
 
     def test_valid_permalink_uppercase_post_id(self) -> None:
         url = "https://example.com/team/pl/ABC123XYZ"
+        result = parse_permalink(url)
+        assert result == "ABC123XYZ"
+
+    def test_valid_permalink_api_post_path(self) -> None:
+        url = "https://example.com/api/v4/posts/ABC123XYZ"
         result = parse_permalink(url)
         assert result == "ABC123XYZ"
 
@@ -57,6 +68,26 @@ class TestParseChannelUrl:
     def test_invalid_channel_url_raises_error(self) -> None:
         with pytest.raises(PermalinkError, match="Not a valid Mattermost channel URL"):
             parse_channel_url("https://chat.canonical.com/canonical/pl/post123")
+
+
+class TestParseMessageUrl:
+    def test_valid_private_group_url(self) -> None:
+        url = "https://chat.canonical.com/canonical/messages/group-channel-name"
+        team_name, channel_name = parse_message_url(url)
+
+        assert team_name == "canonical"
+        assert channel_name == "group-channel-name"
+
+    def test_valid_private_group_url_strips_at_prefix(self) -> None:
+        url = "https://chat.canonical.com/canonical/messages/@group-channel-name"
+        team_name, channel_name = parse_message_url(url)
+
+        assert team_name == "canonical"
+        assert channel_name == "group-channel-name"
+
+    def test_invalid_message_url_raises_error(self) -> None:
+        with pytest.raises(PermalinkError, match="Not a valid Mattermost direct/group message URL"):
+            parse_message_url("https://chat.canonical.com/canonical/channels/general")
 
 
 class TestParseTimePoint:

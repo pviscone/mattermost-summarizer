@@ -37,7 +37,7 @@ from mattermost_summarizer.tools.reference_tracker import (
     ClassifiedUrl,
     ReferenceTracker,
 )
-from mattermost_summarizer.utils import parse_channel_url, parse_permalink, parse_time_point
+from mattermost_summarizer.utils import parse_channel_url, parse_message_url, parse_permalink, parse_time_point
 from mattermost_summarizer.visualizer import FileConversationVisualizer
 
 
@@ -128,9 +128,7 @@ class MattermostSummarizer:
                 raise ValueError("start_time must be earlier than or equal to end_time")
 
         try:
-            if is_channel_window:
-                team_name, channel_name = parse_channel_url(permalink_url)
-            else:
+            if not is_channel_window:
                 post_id = parse_permalink(permalink_url)
         except ValueError as e:
             raise PermalinkError(str(e)) from e
@@ -162,7 +160,23 @@ class MattermostSummarizer:
             conversation_length = 1
             if is_channel_window:
                 assert window_start is not None and window_end is not None
-                channel = client.get_channel_by_name(team_name, channel_name)
+                try:
+                    team_name, channel_name = parse_channel_url(permalink_url)
+                    channel = client.get_channel_by_name(team_name, channel_name)
+                except PermalinkError:
+                    try:
+                        team_name, channel_name = parse_message_url(permalink_url)
+                        try:
+                            channel = client.get_channel_by_name(team_name, channel_name)
+                        except Exception:
+                            channel = client.get_conversation_channel([channel_name])
+                    except PermalinkError:
+                        post_id = parse_permalink(permalink_url)
+                        thread = client.get_post_thread(post_id)
+                        if not thread.channel_id:
+                            raise AgentStuckError("Could not resolve channel for the selected message.")
+                        channel = client.get_channel(thread.channel_id)
+
                 channel_posts = [
                     post
                     for post in client.get_channel_posts(channel.id)
@@ -182,8 +196,17 @@ class MattermostSummarizer:
                     except Exception:
                         user_cache[user_id] = user_id
 
+                channel_label = (
+                    f"#{channel.name}"
+                    if channel.type not in {"D", "G"}
+                    else (channel.display_name or channel.name or "Direct message")
+                )
                 chat_lines = [
-                    f"Channel: #{channel.name}" + (f" ({channel.display_name})" if channel.display_name else ""),
+                    f"Channel: {channel_label}" + (
+                        f" ({channel.display_name})"
+                        if channel.display_name and channel.display_name != channel_label
+                        else ""
+                    ),
                     f"Time window: {window_start.isoformat()} to {window_end.isoformat()}",
                     "=" * 50,
                 ]
@@ -196,7 +219,7 @@ class MattermostSummarizer:
 
                 conversation_text = format_with_delimiter("\n".join(chat_lines))
                 intro = (
-                    f"Summarize this Mattermost chat window for channel #{channel.name}.\n"
+                    f"Summarize this Mattermost chat window for {channel_label}.\n"
                     f"The time window is {window_start.isoformat()} to {window_end.isoformat()}.\n"
                     "All messages are included in chronological order, including posts and replies."
                 )

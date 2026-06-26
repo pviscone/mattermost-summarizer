@@ -1,6 +1,7 @@
 """Mattermost API client using httpx."""
 
 from datetime import datetime
+from collections.abc import Sequence
 from typing import Any, cast
 
 import httpx
@@ -62,46 +63,71 @@ class MattermostClient:
             ThreadNotFoundError: If the post doesn't exist (404)
             AuthenticationError: If unauthorized (401)
         """
-        response = self._http.get(f"/posts/{post_id}/thread")
+        response = self._http.get(f"/posts/{post_id}")
 
         if response.status_code == 401:
             raise AuthenticationError("Mattermost API authentication failed. Check your token.")
         if response.status_code == 404:
             raise ThreadNotFoundError(f"Post not found: {post_id}")
+        if response.status_code == 400 and self._is_invalid_post_id_response(response):
+            raise ThreadNotFoundError(
+                "Mattermost rejected the supplied post_id. "
+                "Use a valid Mattermost permalink that points to an actual post."
+            )
 
         response.raise_for_status()
-        data = response.json()
+        post_data = response.json()
+        root_post = self._parse_post(post_data)
 
-        posts = data.get("posts", {})
-        order = data.get("order", [])
-        if order:
-            root_id = order[0]
-        else:
-            root_id = next(
-                (pid for pid, p in posts.items() if p.get("root_id") == "" or p.get("root_id") == pid),
-                post_id,
-            )
-        if root_id not in posts:
-            raise ThreadNotFoundError(f"Root post not found: {root_id}")
+        root_id = root_post.root_id if root_post.root_id and root_post.root_id != root_post.id else root_post.id
+        if root_id != root_post.id:
+            root_response = self._http.get(f"/posts/{root_id}")
+            if root_response.status_code == 401:
+                raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+            if root_response.status_code == 404:
+                raise ThreadNotFoundError(f"Root post not found: {root_id}")
+            if root_response.status_code == 400 and self._is_invalid_post_id_response(root_response):
+                raise ThreadNotFoundError(
+                    "Mattermost rejected the resolved root post_id. "
+                    "Use a valid Mattermost permalink that points to an actual post."
+                )
+            root_response.raise_for_status()
+            root_post = self._parse_post(root_response.json())
 
-        root_post = self._parse_post(posts[root_id])
+        channel_id = cast(str, post_data.get("channel_id", "") or root_post.props.get("channel_id", ""))
+        if not channel_id:
+            channel_id = cast(str, post_data.get("channel_id", ""))
+        if not channel_id:
+            raise ThreadNotFoundError(f"Channel not found for post: {post_id}")
 
-        replies: list[PostData] = []
-        for pid, post_data in posts.items():
-            if pid != root_id:
-                replies.append(self._parse_post(post_data))
+        channel_posts_response = self._http.get(f"/channels/{channel_id}/posts")
 
-        replies.sort(key=lambda p: p.created_at)
+        if channel_posts_response.status_code == 401:
+            raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+        if channel_posts_response.status_code == 404:
+            raise ChannelNotFoundError(f"Channel not found: {channel_id}")
 
-        channel_id = posts[root_id].get("channel_id", "") or data.get("channel_id", "")
-        channel_name = data.get("channel_name")
-        if channel_id and not channel_name:
+        channel_posts_response.raise_for_status()
+        channel_posts_data = channel_posts_response.json()
+        posts = channel_posts_data.get("posts", {})
+
+        channel_name = channel_posts_data.get("channel_name")
+        if not channel_name:
             try:
                 channel_response = self._http.get(f"/channels/{channel_id}")
                 if channel_response.is_success:
                     channel_name = channel_response.json().get("name")
             except Exception:
                 pass
+
+        replies: list[PostData] = []
+        for pid, item in posts.items():
+            if pid == root_id:
+                continue
+            if item.get("root_id") == root_id:
+                replies.append(self._parse_post(item))
+
+        replies.sort(key=lambda p: p.created_at)
 
         return PostThread(
             root=root_post,
@@ -187,6 +213,54 @@ class MattermostClient:
 
         self._user_cache[user_id] = profile
         return profile
+
+    def get_user_by_username(self, username: str) -> UserProfile:
+        """Fetch a user profile by username."""
+        response = self._http.get(f"/users/username/{username}")
+
+        if response.status_code == 401:
+            raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+        if response.status_code == 404:
+            raise UserNotFoundError(f"User not found: {username}")
+
+        response.raise_for_status()
+        return self._parse_user_profile(response.json())
+
+    def get_me(self) -> UserProfile:
+        """Fetch the authenticated user profile."""
+        response = self._http.get("/users/me")
+
+        if response.status_code == 401:
+            raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+
+        response.raise_for_status()
+        return self._parse_user_profile(response.json())
+
+    def get_conversation_channel(self, usernames: Sequence[str]) -> Channel:
+        """Resolve a direct or group message channel for the provided usernames."""
+        unique_usernames = list(dict.fromkeys(username for username in usernames if username))
+        if not unique_usernames:
+            raise ValueError("At least one username is required")
+
+        me = self.get_me()
+        users = [me]
+        for username in unique_usernames:
+            if username == me.username:
+                continue
+            users.append(self.get_user_by_username(username))
+
+        user_ids = list(dict.fromkeys(user.id for user in users))
+        if len(user_ids) < 2:
+            raise ValueError("At least two distinct users are required for a conversation channel")
+
+        endpoint = "/channels/direct" if len(user_ids) == 2 else "/channels/group"
+        response = self._http.post(endpoint, json=user_ids)
+
+        if response.status_code == 401:
+            raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+
+        response.raise_for_status()
+        return self._parse_channel(response.json())
 
     def get_channel(self, channel_id: str) -> Channel:
         """Fetch a channel by ID.
@@ -296,6 +370,24 @@ class MattermostClient:
             type=cast(str, data.get("type", "O")),
         )
 
+    def _parse_user_profile(self, data: dict[str, Any]) -> UserProfile:
+        """Parse raw user data into a UserProfile model."""
+        return UserProfile(
+            id=cast(str, data["id"]),
+            username=cast(str, data.get("username", "")),
+            display_name=cast(
+                str,
+                data.get("display_name")
+                or data.get("first_name")
+                or data.get("nickname")
+                or data.get("username", ""),
+            ),
+            email=cast(str | None, data.get("email")),
+            nickname=cast(str | None, data.get("nickname")),
+            first_name=cast(str | None, data.get("first_name")),
+            last_name=cast(str | None, data.get("last_name")),
+        )
+
     def get_file(self, file_id: str) -> tuple[bytes, str]:
         """Fetch a file attachment by ID.
 
@@ -347,6 +439,18 @@ class MattermostClient:
             attachments=data.get("file_ids", []),
             props=data.get("props", {}),
         )
+
+    @staticmethod
+    def _is_invalid_post_id_response(response: httpx.Response) -> bool:
+        """Return True when Mattermost rejects a post_id as invalid."""
+        try:
+            payload = response.json()
+        except Exception:
+            return False
+
+        message = str(payload.get("message", ""))
+        error_id = str(payload.get("id", ""))
+        return "invalid or missing post_id" in message.lower() or error_id == "api.context.invalid_url_param.app_error"
 
     def __enter__(self) -> "MattermostClient":
         return self

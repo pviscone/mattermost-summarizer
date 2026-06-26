@@ -22,29 +22,34 @@ def client(httpserver: HTTPServer) -> MattermostClient:
 
 class TestMattermostClientGetPostThread:
     def test_get_post_thread_success(self, client: MattermostClient, httpserver: HTTPServer) -> None:
-        thread_response = {
+        post_response = {
+            "id": "root123",
+            "user_id": "user1",
+            "message": "Root post content",
+            "create_at": 1716288000000,
+            "reply_count": 1,
+            "root_id": "",
+            "channel_id": "channel1",
+        }
+        httpserver.expect_oneshot_request("/api/v4/posts/root123", method="GET").respond_with_json(post_response)
+
+        channel_posts_response = {
             "posts": {
-                "root123": {
-                    "id": "root123",
-                    "user_id": "user1",
-                    "message": "Root post content",
-                    "create_at": 1716288000000,
-                    "reply_count": 1,
-                },
+                "root123": post_response,
                 "reply1": {
                     "id": "reply1",
                     "user_id": "user2",
                     "message": "Reply content",
                     "create_at": 1716288300000,
+                    "root_id": "root123",
+                    "channel_id": "channel1",
                 },
             },
-            "thread_id": "root123",
-            "root_id": "root123",
-            "channel_id": "channel1",
+            "order": ["root123", "reply1"],
             "channel_name": "general",
         }
-        httpserver.expect_oneshot_request("/api/v4/posts/root123/thread", method="GET").respond_with_json(
-            thread_response
+        httpserver.expect_oneshot_request("/api/v4/channels/channel1/posts", method="GET").respond_with_json(
+            channel_posts_response
         )
 
         user1_response = {"id": "user1", "username": "alice", "display_name": "Alice Smith"}
@@ -63,7 +68,7 @@ class TestMattermostClientGetPostThread:
         assert thread.total_replies == 1
 
     def test_get_post_thread_not_found(self, client: MattermostClient, httpserver: HTTPServer) -> None:
-        httpserver.expect_oneshot_request("/api/v4/posts/nonexistent/thread", method="GET").respond_with_json(
+        httpserver.expect_oneshot_request("/api/v4/posts/nonexistent", method="GET").respond_with_json(
             {"message": "Not found"}, status=404
         )
 
@@ -71,12 +76,27 @@ class TestMattermostClientGetPostThread:
             client.get_post_thread("nonexistent")
 
     def test_get_post_thread_unauthorized(self, client: MattermostClient, httpserver: HTTPServer) -> None:
-        httpserver.expect_oneshot_request("/api/v4/posts/post123/thread", method="GET").respond_with_json(
+        httpserver.expect_oneshot_request("/api/v4/posts/post123", method="GET").respond_with_json(
             {"message": "Unauthorized"}, status=401
         )
 
         with pytest.raises(AuthenticationError):
             client.get_post_thread("post123")
+
+    def test_get_post_thread_invalid_post_id(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        httpserver.expect_oneshot_request("/api/v4/posts/badid", method="GET").respond_with_json(
+            {
+                "id": "api.context.invalid_url_param.app_error",
+                "message": "Invalid or missing post_id parameter in request URL.",
+                "detailed_error": "",
+                "request_id": "req123",
+                "status_code": 400,
+            },
+            status=400,
+        )
+
+        with pytest.raises(ThreadNotFoundError, match="rejected the supplied post_id"):
+            client.get_post_thread("badid")
 
 
 class TestMattermostClientGetChannelPosts:
@@ -153,6 +173,92 @@ class TestMattermostClientGetUser:
 
         with pytest.raises(UserNotFoundError, match="User not found"):
             client.get_user("nonexistent")
+
+
+class TestMattermostClientGetUserByUsername:
+    def test_get_user_by_username_success(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        user_response = {
+            "id": "user123",
+            "username": "testuser",
+            "display_name": "Test User",
+        }
+        httpserver.expect_oneshot_request("/api/v4/users/username/testuser", method="GET").respond_with_json(
+            user_response
+        )
+
+        user = client.get_user_by_username("testuser")
+
+        assert user.id == "user123"
+        assert user.username == "testuser"
+
+    def test_get_user_by_username_not_found(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        httpserver.expect_oneshot_request("/api/v4/users/username/nonexistent", method="GET").respond_with_json(
+            {"message": "Not found"}, status=404
+        )
+
+        with pytest.raises(UserNotFoundError, match="User not found"):
+            client.get_user_by_username("nonexistent")
+
+
+class TestMattermostClientGetMe:
+    def test_get_me_success(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        user_response = {
+            "id": "me123",
+            "username": "me",
+            "display_name": "Me User",
+        }
+        httpserver.expect_oneshot_request("/api/v4/users/me", method="GET").respond_with_json(user_response)
+
+        user = client.get_me()
+
+        assert user.id == "me123"
+        assert user.username == "me"
+
+
+class TestMattermostClientGetConversationChannel:
+    def test_get_direct_conversation_channel(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        me_response = {"id": "me123", "username": "me", "display_name": "Me User"}
+        alice_response = {"id": "user123", "username": "alice", "display_name": "Alice"}
+        channel_response = {
+            "id": "channel123",
+            "name": "dm-me-alice",
+            "display_name": "Alice",
+            "type": "D",
+        }
+        httpserver.expect_oneshot_request("/api/v4/users/me", method="GET").respond_with_json(me_response)
+        httpserver.expect_oneshot_request("/api/v4/users/username/alice", method="GET").respond_with_json(
+            alice_response
+        )
+        httpserver.expect_oneshot_request("/api/v4/channels/direct", method="POST").respond_with_json(
+            channel_response
+        )
+
+        channel = client.get_conversation_channel(["alice"])
+
+        assert channel.id == "channel123"
+        assert channel.type == "D"
+
+    def test_get_group_conversation_channel(self, client: MattermostClient, httpserver: HTTPServer) -> None:
+        me_response = {"id": "me123", "username": "me", "display_name": "Me User"}
+        alice_response = {"id": "user123", "username": "alice", "display_name": "Alice"}
+        bob_response = {"id": "user456", "username": "bob", "display_name": "Bob"}
+        channel_response = {
+            "id": "channel456",
+            "name": "group-me-alice-bob",
+            "display_name": "Alice, Bob",
+            "type": "G",
+        }
+        httpserver.expect_oneshot_request("/api/v4/users/me", method="GET").respond_with_json(me_response)
+        httpserver.expect_oneshot_request("/api/v4/users/username/alice", method="GET").respond_with_json(
+            alice_response
+        )
+        httpserver.expect_oneshot_request("/api/v4/users/username/bob", method="GET").respond_with_json(bob_response)
+        httpserver.expect_oneshot_request("/api/v4/channels/group", method="POST").respond_with_json(channel_response)
+
+        channel = client.get_conversation_channel(["alice", "bob"])
+
+        assert channel.id == "channel456"
+        assert channel.type == "G"
 
 
 class TestMattermostClientGetChannel:

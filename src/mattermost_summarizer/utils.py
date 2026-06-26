@@ -15,6 +15,7 @@ __all__ = [
     "check_config_file_permissions",
     "cleanup_external_loggers",
     "parse_channel_url",
+    "parse_message_url",
     "parse_permalink",
     "parse_time_point",
     "setup_logging",
@@ -116,6 +117,7 @@ def parse_permalink(url: str) -> str:
 
     Mattermost permalinks follow the format:
         https://{server}/{team}/pl/{post_id}
+        https://{server}/api/v4/posts/{post_id}
 
     Args:
         url: A Mattermost permalink URL
@@ -139,14 +141,15 @@ def parse_permalink(url: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise PermalinkError(f"Invalid URL format: {url}")
 
-    # Mattermost permalinks have /pl/{post_id} in the path
-    # The post_id is a alphanumeric string
-    match = re.search(r"/pl/([a-z0-9]+)", url, re.IGNORECASE)
+    # Mattermost permalinks have /pl/{post_id} or /api/v4/posts/{post_id} in the path.
+    # The post_id is an alphanumeric string.
+    match = re.search(r"/(?:pl|api/v4/posts)/([a-z0-9]+)", url, re.IGNORECASE)
 
     if not match:
         raise PermalinkError(
             f"Not a valid Mattermost permalink: {url}\n"
-            "Expected format: https://{{server}}/{{team}}/pl/{{post_id}}"
+            "Expected format: https://{server}/{team}/pl/{post_id} or "
+            "https://{server}/api/v4/posts/{post_id}"
         )
 
     return match.group(1)
@@ -170,6 +173,30 @@ def parse_channel_url(url: str) -> tuple[str, str]:
         )
 
     return unquote(path_parts[0]), unquote(path_parts[2])
+
+
+def parse_message_url(url: str) -> tuple[str, str]:
+    """Extract the team and channel name from a Mattermost /messages/ URL."""
+    if not url:
+        raise PermalinkError("Empty URL provided")
+
+    parsed = urlparse(url)
+
+    if not parsed.scheme or not parsed.netloc:
+        raise PermalinkError(f"Invalid URL format: {url}")
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) < 3 or path_parts[1].lower() != "messages":
+        raise PermalinkError(
+            f"Not a valid Mattermost direct/group message URL: {url}\n"
+            "Expected format: https://{server}/{team}/messages/{channel}"
+        )
+
+    channel_name = unquote(path_parts[2]).strip()
+    if not channel_name:
+        raise PermalinkError(f"Not a valid Mattermost direct/group message URL: {url}")
+
+    return unquote(path_parts[0]), channel_name.lstrip("@")
 
 
 def parse_time_point(value: str) -> datetime:

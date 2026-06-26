@@ -326,7 +326,6 @@ class TestSummarizerPromptAndChatWindow:
         mock_conv.run.side_effect = RuntimeError("stop")
 
         mock_client = MagicMock()
-        mock_client.get_team_id_by_name.return_value = "team1"
         mock_client.get_channel_by_name.return_value = Channel(
             id="channel1",
             name="general",
@@ -349,9 +348,11 @@ class TestSummarizerPromptAndChatWindow:
                 root_id="post1",
             ),
         ]
-        mock_client.get_user.side_effect = lambda user_id: MagicMock(
-            username={"user1": "alice", "user2": "bob"}[user_id]
-        )
+
+        def _get_user(user_id: str) -> MagicMock:
+            return MagicMock(username={"user1": "alice", "user2": "bob"}[user_id])
+
+        mock_client.get_user.side_effect = _get_user
 
         with (
             patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
@@ -377,9 +378,177 @@ class TestSummarizerPromptAndChatWindow:
 
         sent_message = mock_conv.send_message.call_args.args[0]
         assert "Focus on decisions." in sent_message
-        assert "Summarize this Mattermost chat window for channel #general." in sent_message
+        assert "Summarize this Mattermost chat window for #general." in sent_message
         assert "First message" in sent_message
         assert "Second message" in sent_message
+
+    def test_messages_url_falls_back_to_conversation_channel(self) -> None:
+        from datetime import datetime
+
+        from pydantic import HttpUrl, SecretStr
+
+        from mattermost_summarizer.config import MattermostSummarizerConfig
+        from mattermost_summarizer.models import Channel, PostData
+        from mattermost_summarizer.summarizer import MattermostSummarizer
+        from mattermost_summarizer.utils import PermalinkError
+
+        config = MattermostSummarizerConfig(
+            mattermost_url=HttpUrl("https://chat.example.com"),
+            mattermost_token=SecretStr("tok"),
+            llm_api_key=SecretStr("key"),
+            critic_enabled=False,
+        )
+        summarizer = MattermostSummarizer(config)
+
+        mock_conv = MagicMock()
+        mock_conv.state.events = []
+        mock_conv.run.side_effect = RuntimeError("stop")
+
+        mock_client = MagicMock()
+        mock_client.get_channel_by_name.return_value = Channel(
+            id="channel1",
+            name="group-channel-name",
+            display_name="Cristina Botta, Gianluca Cerminara",
+            type="G",
+        )
+        mock_client.get_channel_posts.return_value = [
+            PostData(
+                id="post1",
+                author_id="user1",
+                message="First message",
+                created_at=datetime(2026, 6, 26, 10, 0, 0),
+                root_id="",
+            ),
+            PostData(
+                id="post2",
+                author_id="user2",
+                message="Second message",
+                created_at=datetime(2026, 6, 26, 10, 5, 0),
+                root_id="post1",
+            ),
+        ]
+        def _get_user(user_id: str) -> MagicMock:
+            return MagicMock(username={"user1": "alice", "user2": "bob"}[user_id])
+
+        mock_client.get_user.side_effect = _get_user
+
+        with (
+            patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.register_subagents"),
+            patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
+            patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
+            patch(
+                "mattermost_summarizer.summarizer.parse_channel_url",
+                side_effect=PermalinkError("not a channel url"),
+            ),
+            patch(
+                "mattermost_summarizer.summarizer.parse_message_url",
+                return_value=("canonical", "group-channel-name"),
+            ),
+            patch("mattermost_summarizer.summarizer.FileConversationVisualizer"),
+        ):
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_conv_cls.return_value = mock_conv
+
+            try:
+                summarizer.summarize(
+                    "https://chat.example.com/canonical/messages/group-channel-name",
+                    prompt="Focus on decisions.",
+                    start_time="2026-06-26T09:00:00",
+                    end_time="2026-06-26T11:00:00",
+                )
+            except Exception:
+                pass
+
+        mock_client.get_channel_by_name.assert_called_once_with("canonical", "group-channel-name")
+        mock_client.get_channel_posts.assert_called_once_with("channel1")
+
+    def test_messages_post_permalink_uses_thread_channel_in_window_mode(self) -> None:
+        from datetime import datetime
+
+        from pydantic import HttpUrl, SecretStr
+
+        from mattermost_summarizer.config import MattermostSummarizerConfig
+        from mattermost_summarizer.models import Channel, PostData, PostThread
+        from mattermost_summarizer.summarizer import MattermostSummarizer
+        from mattermost_summarizer.utils import PermalinkError
+
+        config = MattermostSummarizerConfig(
+            mattermost_url=HttpUrl("https://chat.example.com"),
+            mattermost_token=SecretStr("tok"),
+            llm_api_key=SecretStr("key"),
+            critic_enabled=False,
+        )
+        summarizer = MattermostSummarizer(config)
+
+        mock_conv = MagicMock()
+        mock_conv.state.events = []
+        mock_conv.run.side_effect = RuntimeError("stop")
+
+        mock_client = MagicMock()
+        mock_client.get_post_thread.return_value = PostThread(
+            root=PostData(
+                id="root123",
+                author_id="user1",
+                message="First message",
+                created_at=datetime(2026, 6, 26, 10, 0, 0),
+                root_id="",
+            ),
+            replies=[],
+            channel_id="channel1",
+            channel_name="private-group",
+            total_replies=0,
+        )
+        mock_client.get_channel.return_value = Channel(
+            id="channel1",
+            name="private-group",
+            display_name="Private group",
+            type="G",
+        )
+        mock_client.get_channel_posts.return_value = [
+            PostData(
+                id="post1",
+                author_id="user1",
+                message="First message",
+                created_at=datetime(2026, 6, 26, 10, 0, 0),
+                root_id="",
+            )
+        ]
+        mock_client.get_user.return_value = MagicMock(username="alice")
+
+        with (
+            patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.register_subagents"),
+            patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
+            patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
+            patch(
+                "mattermost_summarizer.summarizer.parse_channel_url",
+                side_effect=PermalinkError("not a channel url"),
+            ),
+            patch(
+                "mattermost_summarizer.summarizer.parse_message_url",
+                side_effect=PermalinkError("not a message url"),
+            ),
+            patch("mattermost_summarizer.summarizer.FileConversationVisualizer"),
+        ):
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_conv_cls.return_value = mock_conv
+
+            try:
+                summarizer.summarize(
+                    "https://chat.example.com/canonical/pl/f0d11a999bb47d05e3f4aad50329559ed41f0869",
+                    prompt="Focus on decisions.",
+                    start_time="2026-06-26T09:00:00",
+                    end_time="2026-06-26T11:00:00",
+                )
+            except Exception:
+                pass
+
+        mock_client.get_post_thread.assert_called_once_with("f0d11a999bb47d05e3f4aad50329559ed41f0869")
+        mock_client.get_channel.assert_called_once_with("channel1")
+        mock_client.get_channel_posts.assert_called_once_with("channel1")
 
 
 # ---------------------------------------------------------------------------
