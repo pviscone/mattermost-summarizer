@@ -79,6 +79,40 @@ class TestMattermostClientGetPostThread:
             client.get_post_thread("post123")
 
 
+class TestMattermostClientGetChannelPosts:
+    def test_get_channel_posts_returns_chronological_order(
+        self, client: MattermostClient, httpserver: HTTPServer
+    ) -> None:
+        channel_posts_response = {
+            "posts": {
+                "post2": {
+                    "id": "post2",
+                    "user_id": "user2",
+                    "message": "Later message",
+                    "create_at": 1716288300000,
+                    "root_id": "post1",
+                },
+                "post1": {
+                    "id": "post1",
+                    "user_id": "user1",
+                    "message": "Earlier message",
+                    "create_at": 1716288000000,
+                    "root_id": "",
+                },
+            },
+            "order": ["post2", "post1"],
+        }
+        httpserver.expect_oneshot_request("/api/v4/channels/channel123/posts", method="GET").respond_with_json(
+            channel_posts_response
+        )
+
+        posts = client.get_channel_posts("channel123")
+
+        assert [post.id for post in posts] == ["post1", "post2"]
+        assert posts[0].message == "Earlier message"
+        assert posts[1].root_id == "post1"
+
+
 class TestMattermostClientGetUser:
     def test_get_user_success(self, client: MattermostClient, httpserver: HTTPServer) -> None:
         user_response = {
@@ -185,14 +219,11 @@ class TestMattermostClientGetChannelByName:
             "header": "Channel for cloud-init",
             "type": "O",
         }
-        httpserver.expect_oneshot_request("/api/v4/teams/name/ubuntu", method="GET").respond_with_json(
-            {"id": "team1", "name": "ubuntu"}
-        )
-        httpserver.expect_oneshot_request("/api/v4/channels/name/team1/cloud-init", method="GET").respond_with_json(
-            channel_response
-        )
+        httpserver.expect_oneshot_request(
+            "/api/v4/teams/name/ubuntu/channels/name/cloud-init", method="GET"
+        ).respond_with_json(channel_response)
 
-        channel = client.get_channel_by_name("team1", "cloud-init")
+        channel = client.get_channel_by_name("ubuntu", "cloud-init")
 
         assert channel.id == "channel123"
         assert channel.name == "cloud-init"
@@ -208,25 +239,19 @@ class TestMattermostClientGetChannelByName:
             "team_id": "team1",
             "team_name": "ubuntu",
         }
-        httpserver.expect_oneshot_request("/api/v4/teams/name/ubuntu", method="GET").respond_with_json(
-            {"id": "team1", "name": "ubuntu"}
-        )
-        httpserver.expect_oneshot_request("/api/v4/channels/name/team1/cloud-init", method="GET").respond_with_json(
-            channel_response
-        )
+        httpserver.expect_oneshot_request(
+            "/api/v4/teams/name/ubuntu/channels/name/cloud-init", method="GET"
+        ).respond_with_json(channel_response)
 
-        channel = client.get_channel_by_name("team1", "cloud-init")
+        channel = client.get_channel_by_name("ubuntu", "cloud-init")
 
         assert channel.id == "channel123"
         assert channel.team_name == "ubuntu"
 
     def test_get_channel_by_name_not_found(self, client: MattermostClient, httpserver: HTTPServer) -> None:
-        httpserver.expect_oneshot_request("/api/v4/teams/name/nonexistent", method="GET").respond_with_json(
-            {"id": "team1", "name": "nonexistent"}
-        )
-        httpserver.expect_oneshot_request("/api/v4/channels/name/team1/nonexistent", method="GET").respond_with_json(
-            {"message": "Not found"}, status=404
-        )
+        httpserver.expect_oneshot_request(
+            "/api/v4/teams/name/nonexistent/channels/name/nonexistent", method="GET"
+        ).respond_with_json({"message": "Not found"}, status=404)
 
         with pytest.raises(ChannelNotFoundError, match="Channel not found"):
-            client.get_channel_by_name("team1", "nonexistent")
+            client.get_channel_by_name("nonexistent", "nonexistent")

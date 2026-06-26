@@ -16,7 +16,7 @@ os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
 
 # Patch OTel context propagation into DelegateExecutor threads so that
 # sub-agent spans nest correctly under their parent DelegateAction span.
-from mattermost_summarizer.tracing_patch import install as _install_tracing_patch
+from mattermost_summarizer.tracing_patch import install as _install_tracing_patch  # noqa: E402
 
 _install_tracing_patch()
 
@@ -27,7 +27,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize a Mattermost thread")
     parser.add_argument(
         "url",
-        help="Mattermost thread URL (e.g., https://chat.canonical.com/canonical/pl/post_id)",
+        help="Mattermost thread URL, or a Mattermost channel URL when using --start_time and --end_time",
     )
     parser.add_argument(
         "--config",
@@ -55,6 +55,14 @@ def main() -> int:
         action="store_true",
         help="Enable verbose output (info/warning/error to stderr)",
     )
+    parser.add_argument(
+        "--prompt",
+        "-p",
+        default=None,
+        help="Custom prompt to append to the default model prompt",
+    )
+    parser.add_argument("--start_time", default=None, help="Start time for filtering posts (ISO 8601)")
+    parser.add_argument("--end_time", default=None, help="End time for filtering posts (ISO 8601)")
 
     args = parser.parse_args()
 
@@ -89,7 +97,13 @@ def main() -> int:
     try:
         summarizer = MattermostSummarizer(config)
         with contextlib.redirect_stdout(sys.stderr):
-            result = summarizer.summarize(args.url, level=level)
+            result = summarizer.summarize(
+                args.url,
+                level=level,
+                prompt=args.prompt,
+                start_time=args.start_time,
+                end_time=args.end_time,
+            )
     except Exception as e:
         print(f"Error summarizing thread ({type(e).__name__}): {e}", file=sys.stderr)
         return 1

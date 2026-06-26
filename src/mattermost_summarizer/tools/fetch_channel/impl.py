@@ -77,11 +77,8 @@ class FetchChannelExecutor(ToolExecutor[FetchChannelAction, FetchChannelObservat
         """
         if self.client is None:
             return None
-        team_id = self.client.get_team_id_by_name(team_name)
-        if not team_id:
-            return None
         try:
-            channel = self.client.get_channel_by_name(team_id, channel_name)
+            channel = self.client.get_channel_by_name(team_name, channel_name)
             return channel.id
         except Exception:
             pass

@@ -111,6 +111,41 @@ class MattermostClient:
             total_replies=len(replies),
         )
 
+    def get_channel_posts(self, channel_id: str, per_page: int = 200) -> list[PostData]:
+        """Fetch all posts for a channel, sorted chronologically."""
+        posts_by_id: dict[str, PostData] = {}
+        page = 0
+
+        while True:
+            response = self._http.get(
+                f"/channels/{channel_id}/posts",
+                params={"page": page, "per_page": per_page},
+            )
+
+            if response.status_code == 401:
+                raise AuthenticationError("Mattermost API authentication failed. Check your token.")
+            if response.status_code == 404:
+                raise ChannelNotFoundError(f"Channel not found: {channel_id}")
+
+            response.raise_for_status()
+            data = response.json()
+
+            posts = data.get("posts", {})
+            order = data.get("order", [])
+            ordered_ids = order if order else list(posts.keys())
+
+            for post_id in ordered_ids:
+                post_data = posts.get(post_id)
+                if post_data is not None and post_id not in posts_by_id:
+                    posts_by_id[post_id] = self._parse_post(post_data)
+
+            if len(ordered_ids) < per_page:
+                break
+
+            page += 1
+
+        return sorted(posts_by_id.values(), key=lambda post: post.created_at)
+
     def get_user(self, user_id: str) -> UserProfile:
         """Fetch a user profile by ID.
 
@@ -197,11 +232,11 @@ class MattermostClient:
             type=data.get("type", "O"),
         )
 
-    def get_channel_by_name(self, team_id: str, channel_name: str) -> Channel:
+    def get_channel_by_name(self, team_name: str, channel_name: str) -> Channel:
         """Fetch a channel by name within a specific team.
 
         Args:
-            team_id: The team ID
+            team_name: The team slug/name from the Mattermost URL
             channel_name: The channel name (not display name)
 
         Returns:
@@ -211,7 +246,7 @@ class MattermostClient:
             ChannelNotFoundError: If channel doesn't exist (404)
             AuthenticationError: If unauthorized (401)
         """
-        response = self._http.get(f"/channels/name/{team_id}/{channel_name}")
+        response = self._http.get(f"/teams/name/{team_name}/channels/name/{channel_name}")
 
         if response.status_code == 401:
             raise AuthenticationError("Mattermost API authentication failed. Check your token.")
@@ -307,6 +342,7 @@ class MattermostClient:
             message=data.get("message", ""),
             created_at=datetime.fromtimestamp(data.get("create_at", 0) / 1000),
             reply_count=data.get("reply_count", 0),
+            root_id=data.get("root_id", ""),
             reactions=reactions,
             attachments=data.get("file_ids", []),
             props=data.get("props", {}),

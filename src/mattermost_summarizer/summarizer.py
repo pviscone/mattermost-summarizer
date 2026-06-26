@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 from openhands.sdk import LocalConversation
 
-from mattermost_summarizer.agent import build_orchestrator_agent
+from mattermost_summarizer.agent import SYSTEM_PROMPT, build_orchestrator_agent
 from mattermost_summarizer.client import MattermostClient
 from mattermost_summarizer.config import MattermostSummarizerConfig
 from mattermost_summarizer.critic import SummarizationCritic
@@ -36,7 +37,7 @@ from mattermost_summarizer.tools.reference_tracker import (
     ClassifiedUrl,
     ReferenceTracker,
 )
-from mattermost_summarizer.utils import parse_permalink
+from mattermost_summarizer.utils import parse_channel_url, parse_permalink, parse_time_point
 from mattermost_summarizer.visualizer import FileConversationVisualizer
 
 
@@ -88,12 +89,19 @@ class MattermostSummarizer:
         self,
         permalink_url: str,
         level: SummaryLevel = SummaryLevel.NORMAL,
+        prompt: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
     ) -> AnySummaryResult:
-        """Summarize a Mattermost thread from a permalink URL.
+        """Summarize a Mattermost thread or channel window.
 
         Args:
-            permalink_url: A Mattermost permalink (e.g., https://chat.example.com/team/pl/abc123)
+            permalink_url: A Mattermost permalink, or a Mattermost channel URL when
+                start_time and end_time are provided.
             level: Summarization detail level (default: NORMAL)
+            prompt: Optional custom prompt appended to the default prompt
+            start_time: Inclusive start time for channel-window mode (ISO 8601)
+            end_time: Inclusive end time for channel-window mode (ISO 8601)
 
         Returns:
             AnySummaryResult (BriefSummaryResult, NormalSummaryResult, or DetailedSummaryResult)
@@ -105,10 +113,25 @@ class MattermostSummarizer:
             ThreadNotFoundError: If thread doesn't exist (404)
             AgentStuckError: If agent gets stuck and cannot complete
         """
-        start_time = time.time()
+        start_clock = time.time()
+
+        if (start_time is None) != (end_time is None):
+            raise ValueError("start_time and end_time must be provided together")
+
+        is_channel_window = start_time is not None and end_time is not None
+        window_start: datetime | None = None
+        window_end: datetime | None = None
+        if is_channel_window:
+            window_start = parse_time_point(start_time)
+            window_end = parse_time_point(end_time)
+            if window_start > window_end:
+                raise ValueError("start_time must be earlier than or equal to end_time")
 
         try:
-            post_id = parse_permalink(permalink_url)
+            if is_channel_window:
+                team_name, channel_name = parse_channel_url(permalink_url)
+            else:
+                post_id = parse_permalink(permalink_url)
         except ValueError as e:
             raise PermalinkError(str(e)) from e
 
@@ -136,17 +159,63 @@ class MattermostSummarizer:
                 log_blocked=self.config.ssrf_log_blocked,
             )
 
-            # Prefetch root thread before initializing the LLM.
-            fetch_executor = FetchThreadExecutor(client)
-            fetch_obs = fetch_executor(FetchThreadAction(post_id=post_id))
-            if fetch_obs.error:
-                raise AgentStuckError(f"Failed to fetch root thread: {fetch_obs.error}")
+            conversation_length = 1
+            if is_channel_window:
+                assert window_start is not None and window_end is not None
+                channel = client.get_channel_by_name(team_name, channel_name)
+                channel_posts = [
+                    post
+                    for post in client.get_channel_posts(channel.id)
+                    if window_start <= post.created_at <= window_end
+                ]
+                if not channel_posts:
+                    raise AgentStuckError("No messages were found in the selected channel time window.")
 
-            root_thread_length = int(fetch_obs.total_replies) + 1
-            thread_text = format_with_delimiter("\n".join(item.text for item in fetch_obs.to_llm_content))
-            message = (
-                f"Summarize this Mattermost thread. The post ID is: {post_id}\n\n{thread_text}\n\n{level_addendum}"
-            )
+                conversation_length = len(channel_posts)
+
+                all_user_ids = {post.author_id for post in channel_posts if post.author_id}
+                user_cache: dict[str, str] = {}
+                for user_id in all_user_ids:
+                    try:
+                        user = client.get_user(user_id)
+                        user_cache[user_id] = user.username
+                    except Exception:
+                        user_cache[user_id] = user_id
+
+                chat_lines = [
+                    f"Channel: #{channel.name}" + (f" ({channel.display_name})" if channel.display_name else ""),
+                    f"Time window: {window_start.isoformat()} to {window_end.isoformat()}",
+                    "=" * 50,
+                ]
+                for index, post in enumerate(channel_posts, 1):
+                    author = user_cache.get(post.author_id, post.author_id)
+                    kind = "Reply" if post.root_id and post.root_id != post.id else "Post"
+                    chat_lines.append(f"{index}. {kind} by @{author} at {post.created_at.isoformat()}:")
+                    chat_lines.append(f"  {post.message}")
+                    chat_lines.append("")
+
+                conversation_text = format_with_delimiter("\n".join(chat_lines))
+                intro = (
+                    f"Summarize this Mattermost chat window for channel #{channel.name}.\n"
+                    f"The time window is {window_start.isoformat()} to {window_end.isoformat()}.\n"
+                    "All messages are included in chronological order, including posts and replies."
+                )
+            else:
+                # Prefetch root thread before initializing the LLM.
+                fetch_executor = FetchThreadExecutor(client)
+                fetch_obs = fetch_executor(FetchThreadAction(post_id=post_id))
+                if fetch_obs.error:
+                    raise AgentStuckError(f"Failed to fetch root thread: {fetch_obs.error}")
+
+                conversation_length = int(fetch_obs.total_replies) + 1
+                conversation_text = format_with_delimiter("\n".join(item.text for item in fetch_obs.to_llm_content))
+                intro = f"Summarize this Mattermost thread. The post ID is: {post_id}"
+
+            prompt_sections = [intro, SYSTEM_PROMPT]
+            if prompt:
+                prompt_sections.append(prompt)
+            prompt_sections.append(level_addendum)
+            message = "\n\n".join(prompt_sections) + f"\n\n{conversation_text}"
 
             register_subagents(client)
 
@@ -236,7 +305,7 @@ class MattermostSummarizer:
                         )
                     raise AgentStuckError("Agent did not produce a finish action. The summary could not be extracted.")
 
-                duration = time.time() - start_time
+                duration = time.time() - start_clock
 
                 input_tokens = 0
                 output_tokens = 0
@@ -260,7 +329,7 @@ class MattermostSummarizer:
 
                 thread_length = 1
                 if hasattr(finish_action, "tldr"):
-                    thread_length = root_thread_length
+                    thread_length = conversation_length
 
                 metadata = SummaryMeta(
                     thread_length=thread_length,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from mattermost_summarizer.levels import (
     BriefFinishAction,
@@ -180,7 +180,6 @@ class TestExtractFinishAction:
         assert result is None
 
     def test_extract_returns_none_when_no_state(self) -> None:
-
         conv = MagicMock(spec=[])
         conv.state = None
         result = _extract_finish_action(conv)
@@ -302,6 +301,85 @@ class TestSummarizerFinishActionBaseIsinstance:
             context_sources=[],
         )
         assert action2.is_summarizer_finish is True
+
+
+class TestSummarizerPromptAndChatWindow:
+    def test_custom_prompt_is_appended_and_channel_window_is_used(self) -> None:
+        from datetime import datetime
+
+        from pydantic import HttpUrl, SecretStr
+
+        from mattermost_summarizer.config import MattermostSummarizerConfig
+        from mattermost_summarizer.models import Channel, PostData
+        from mattermost_summarizer.summarizer import MattermostSummarizer
+
+        config = MattermostSummarizerConfig(
+            mattermost_url=HttpUrl("https://chat.example.com"),
+            mattermost_token=SecretStr("tok"),
+            llm_api_key=SecretStr("key"),
+            critic_enabled=False,
+        )
+        summarizer = MattermostSummarizer(config)
+
+        mock_conv = MagicMock()
+        mock_conv.state.events = []
+        mock_conv.run.side_effect = RuntimeError("stop")
+
+        mock_client = MagicMock()
+        mock_client.get_team_id_by_name.return_value = "team1"
+        mock_client.get_channel_by_name.return_value = Channel(
+            id="channel1",
+            name="general",
+            display_name="General",
+            team_name="canonical",
+        )
+        mock_client.get_channel_posts.return_value = [
+            PostData(
+                id="post1",
+                author_id="user1",
+                message="First message",
+                created_at=datetime(2026, 6, 26, 10, 0, 0),
+                root_id="",
+            ),
+            PostData(
+                id="post2",
+                author_id="user2",
+                message="Second message",
+                created_at=datetime(2026, 6, 26, 10, 5, 0),
+                root_id="post1",
+            ),
+        ]
+        mock_client.get_user.side_effect = lambda user_id: MagicMock(
+            username={"user1": "alice", "user2": "bob"}[user_id]
+        )
+
+        with (
+            patch("mattermost_summarizer.summarizer.MattermostClient") as mock_client_cls,
+            patch("mattermost_summarizer.summarizer.register_subagents"),
+            patch("mattermost_summarizer.summarizer.build_orchestrator_agent"),
+            patch("mattermost_summarizer.summarizer.LocalConversation") as mock_conv_cls,
+            patch("mattermost_summarizer.summarizer.parse_channel_url", return_value=("canonical", "general")),
+            patch("mattermost_summarizer.summarizer.FileConversationVisualizer"),
+        ):
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_conv_cls.return_value = mock_conv
+
+            try:
+                summarizer.summarize(
+                    "https://chat.example.com/canonical/channels/general",
+                    prompt="Focus on decisions.",
+                    start_time="2026-06-26T09:00:00",
+                    end_time="2026-06-26T11:00:00",
+                )
+            except Exception:
+                pass
+
+        sent_message = mock_conv.send_message.call_args.args[0]
+        assert "Focus on decisions." in sent_message
+        assert "Summarize this Mattermost chat window for channel #general." in sent_message
+        assert "First message" in sent_message
+        assert "Second message" in sent_message
 
 
 # ---------------------------------------------------------------------------

@@ -3,9 +3,10 @@
 import logging
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from mattermost_summarizer.exceptions import PermalinkError
 
@@ -13,7 +14,9 @@ __all__ = [
     "PermalinkError",
     "check_config_file_permissions",
     "cleanup_external_loggers",
+    "parse_channel_url",
     "parse_permalink",
+    "parse_time_point",
     "setup_logging",
 ]
 
@@ -147,3 +150,34 @@ def parse_permalink(url: str) -> str:
         )
 
     return match.group(1)
+
+
+def parse_channel_url(url: str) -> tuple[str, str]:
+    """Extract the team and channel names from a Mattermost channel URL."""
+    if not url:
+        raise PermalinkError("Empty URL provided")
+
+    parsed = urlparse(url)
+
+    if not parsed.scheme or not parsed.netloc:
+        raise PermalinkError(f"Invalid URL format: {url}")
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) < 3 or path_parts[1].lower() != "channels":
+        raise PermalinkError(
+            f"Not a valid Mattermost channel URL: {url}\n"
+            "Expected format: https://{server}/{team}/channels/{channel}"
+        )
+
+    return unquote(path_parts[0]), unquote(path_parts[2])
+
+
+def parse_time_point(value: str) -> datetime:
+    """Parse an ISO 8601 time point into a UTC-naive datetime."""
+    if not value:
+        raise ValueError("Empty time value provided")
+
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed

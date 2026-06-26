@@ -2,7 +2,7 @@
 
 import pytest
 
-from mattermost_summarizer.utils import PermalinkError, parse_permalink
+from mattermost_summarizer.utils import PermalinkError, parse_channel_url, parse_permalink, parse_time_point
 
 
 class TestParsePermalink:
@@ -44,3 +44,26 @@ class TestParsePermalink:
         url = "not-a-url-at-all"
         with pytest.raises(PermalinkError, match="Invalid URL format"):
             parse_permalink(url)
+
+
+class TestParseChannelUrl:
+    def test_valid_channel_url(self) -> None:
+        url = "https://chat.canonical.com/canonical/channels/general"
+        team_name, channel_name = parse_channel_url(url)
+
+        assert team_name == "canonical"
+        assert channel_name == "general"
+
+    def test_invalid_channel_url_raises_error(self) -> None:
+        with pytest.raises(PermalinkError, match="Not a valid Mattermost channel URL"):
+            parse_channel_url("https://chat.canonical.com/canonical/pl/post123")
+
+
+class TestParseTimePoint:
+    def test_parse_naive_iso_time(self) -> None:
+        parsed = parse_time_point("2026-06-26T10:00:00")
+        assert parsed.isoformat() == "2026-06-26T10:00:00"
+
+    def test_parse_utc_z_time(self) -> None:
+        parsed = parse_time_point("2026-06-26T10:00:00Z")
+        assert parsed.isoformat() == "2026-06-26T10:00:00"

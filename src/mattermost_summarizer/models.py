@@ -49,6 +49,7 @@ class PostData(BaseModel):
     message: str
     created_at: datetime
     reply_count: int = 0
+    root_id: str = ""
     reactions: list[ReactionData] = []
     attachments: list[str] = []
     props: dict[str, Any] = {}
