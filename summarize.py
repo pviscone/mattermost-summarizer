@@ -9,7 +9,8 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
+import time
 
 logging.getLogger("litellm").setLevel(logging.ERROR)
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
@@ -70,7 +71,7 @@ def main() -> int:
     # Support using the literal value "present" to indicate the current time.
     # Example: --start_time 2026-01-01T00:00:00 --end_time present
     if args.end_time is not None and isinstance(args.end_time, str) and args.end_time.lower() == "present":
-        args.end_time = datetime.now(timezone.utc).isoformat()
+        args.end_time = datetime.fromtimestamp(time.time()).isoformat()
 
     config_path = Path(args.config)
     if not config_path.exists():
