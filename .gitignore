@@ -7,3 +7,6 @@ session-*
 uv.lock
 .ocx
 .env
+mattermost-summarizer.log
+mattermost-summarizer.toml
+agent-trace.log

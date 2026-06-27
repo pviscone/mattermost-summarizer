@@ -202,7 +202,8 @@ class MattermostSummarizer:
                     else (channel.display_name or channel.name or "Direct message")
                 )
                 chat_lines = [
-                    f"Channel: {channel_label}" + (
+                    f"Channel: {channel_label}"
+                    + (
                         f" ({channel.display_name})"
                         if channel.display_name and channel.display_name != channel_label
                         else ""
@@ -210,10 +211,24 @@ class MattermostSummarizer:
                     f"Time window: {window_start.isoformat()} to {window_end.isoformat()}",
                     "=" * 50,
                 ]
+                # Map post id -> author username and index for parent lookups
+                post_author_by_id = {p.id: user_cache.get(p.author_id, p.author_id) for p in channel_posts}
+                post_index_by_id = {p.id: idx for idx, p in enumerate(channel_posts, 1)}
+
                 for index, post in enumerate(channel_posts, 1):
                     author = user_cache.get(post.author_id, post.author_id)
                     kind = "Reply" if post.root_id and post.root_id != post.id else "Post"
-                    chat_lines.append(f"{index}. {kind} by @{author} at {post.created_at.isoformat()}:")
+                    parent_info = ""
+                    if getattr(post, "in_reply_to", None):
+                        parent = post.in_reply_to
+                        parent_idx = post_index_by_id.get(parent)
+                        parent_author = post_author_by_id.get(parent, parent)
+                        if parent_idx:
+                            parent_info = f" (in reply to message #{parent_idx} by @{parent_author})"
+                        else:
+                            parent_info = f" (in reply to @{parent_author})"
+
+                    chat_lines.append(f"{index}. {kind} by @{author} at {post.created_at.isoformat()}{parent_info}:")
                     chat_lines.append(f"  {post.message}")
                     chat_lines.append("")
 

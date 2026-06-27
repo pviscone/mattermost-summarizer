@@ -377,10 +377,7 @@ class MattermostClient:
             username=cast(str, data.get("username", "")),
             display_name=cast(
                 str,
-                data.get("display_name")
-                or data.get("first_name")
-                or data.get("nickname")
-                or data.get("username", ""),
+                data.get("display_name") or data.get("first_name") or data.get("nickname") or data.get("username", ""),
             ),
             email=cast(str | None, data.get("email")),
             nickname=cast(str | None, data.get("nickname")),
@@ -435,6 +432,11 @@ class MattermostClient:
             created_at=datetime.fromtimestamp(data.get("create_at", 0) / 1000),
             reply_count=data.get("reply_count", 0),
             root_id=data.get("root_id", ""),
+            in_reply_to=(
+                data.get("parent_id")
+                if data.get("parent_id")
+                else (data.get("root_id") if data.get("root_id") and data.get("root_id") != data.get("id") else None)
+            ),
             reactions=reactions,
             attachments=data.get("file_ids", []),
             props=data.get("props", {}),

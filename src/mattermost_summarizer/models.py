@@ -50,6 +50,9 @@ class PostData(BaseModel):
     created_at: datetime
     reply_count: int = 0
     root_id: str = ""
+    # ID of the post this post is directly replying to (parent). May be the root_id
+    # for simple thread replies or a specific post id when replying to another reply.
+    in_reply_to: str | None = None
     reactions: list[ReactionData] = []
     attachments: list[str] = []
     props: dict[str, Any] = {}

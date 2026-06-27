@@ -58,11 +58,33 @@ class FetchThreadObservation(Observation):
 
         if self.total_replies > 0:
             lines.append(f"--- Replies ({self.total_replies}) ---")
+            # Build mappings from post id -> author and post id -> chronological index
+            all_posts = [root] + list(self.replies)
+            id_to_author: dict[str, str] = {}
+            id_to_index: dict[str, int] = {}
+            for idx, p in enumerate(all_posts, 1):
+                pid = p.get("id")
+                if pid:
+                    id_to_index[pid] = idx
+                    id_to_author[pid] = p.get("author_name", p.get("author_id", "Unknown"))
+
+            # Replies are displayed after the root; number them starting at 2
             for i, reply in enumerate(self.replies, 1):
+                display_idx = i + 1
                 author = reply.get("author_name", reply.get("author_id", "Unknown"))
                 time = reply.get("created_at", "unknown time")
                 msg = sanitize_text(str(reply.get("message", "")))
-                lines.append(f"{i}. @{author} at {time}:")
+                parent = reply.get("in_reply_to")
+                parent_info = ""
+                if parent:
+                    parent_idx = id_to_index.get(parent)
+                    parent_author = id_to_author.get(parent, parent)
+                    if parent_idx:
+                        parent_info = f" (in reply to message #{parent_idx} by @{parent_author})"
+                    else:
+                        parent_info = f" (in reply to @{parent_author})"
+
+                lines.append(f"{display_idx}. @{author} at {time}{parent_info}:")
                 lines.append(f"   {msg}")
                 lines.append("")
         else:
@@ -103,6 +125,7 @@ class FetchThreadExecutor(ToolExecutor[FetchThreadAction, FetchThreadObservation
                 "message": thread.root.message,
                 "created_at": thread.root.created_at.isoformat() if thread.root.created_at else "",
                 "reply_count": thread.root.reply_count,
+                "in_reply_to": thread.root.in_reply_to,
             }
 
             replies_data: list[dict[str, object]] = []
@@ -115,6 +138,7 @@ class FetchThreadExecutor(ToolExecutor[FetchThreadAction, FetchThreadObservation
                         "message": reply.message,
                         "created_at": reply.created_at.isoformat() if reply.created_at else "",
                         "reply_count": reply.reply_count,
+                        "in_reply_to": reply.in_reply_to,
                     }
                 )
 
